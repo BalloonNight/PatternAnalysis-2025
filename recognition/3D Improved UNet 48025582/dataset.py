@@ -19,13 +19,12 @@ class ProMRIDataSet(Dataset):
         self.patch_size: the size of the 3d patches to be returned
     """
 
-    def __init__(self, image_dir, label_dir, patch_size=(128, 128, 128), augment=False):
-        self.augment = augment
+    def __init__(self, image_dir, label_dir, transformer=None):
+        self.transformer = transformer
         self.image_paths = sorted([os.path.join(image_dir, filename) for
                                    filename in os.listdir(image_dir)])
         self.label_paths = sorted([os.path.join(label_dir, filename) for
                                    filename in os.listdir(label_dir)])
-        self.patch_size = patch_size
 
     def __len__(self):
         return len(self.image_paths)
@@ -34,8 +33,23 @@ class ProMRIDataSet(Dataset):
         # Load the image and label
         image = nib.load(self.image_paths[idx]).get_fdata().astype(np.float32)
         label = nib.load(self.label_paths[idx]).get_fdata().astype(np.uint8)
+        print(label.shape)
+
+        # one hot encoding
+        label = to_channels(label, np.uint8)
+        label = np.moveaxis(label, 3, 0)
+
+        # normalise
+        image = (image - image.mean()) / image.std()
+
+        # convert to tensor
+        image = torch.from_numpy(image.astype(np.float32))
+        label = torch.from_numpy(label.astype(np.uint8)).squeeze(0)
+        print(label.shape)
 
         sample = {"image": image, "label": label}
+        if self.transformer:
+            self.transformer(sample)
 
         return sample
 
@@ -44,12 +58,7 @@ class Transformer3D:
     def __call__(self, sample):
         image, label = sample['image'], sample['label']
 
-        # normalise
-        image = (image - image.mean()) / image.std()
-
-        # convert to tensor
-        image = torch.from_numpy(image.astype(np.float32))
-        label = torch.from_numpy(label.astype(np.uint8))
+        # stuff like random flips
 
         sample['image'], sample['label'] = image, label
 
