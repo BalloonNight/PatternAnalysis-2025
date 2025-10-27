@@ -16,11 +16,11 @@ class ProMRIDataSet(Dataset):
         self.transformer: transformations to apply to each image
         self.image_paths: the 3d images of the MRI scans
         self.label_paths: the labels for the images
-        self.patch_size: the size of the 3d patches to be returned
     """
 
     def __init__(self, image_dir, label_dir, transformer=None):
         self.transformer = transformer
+        # get a sorted list of all the files in the given directories
         self.image_paths = sorted([os.path.join(image_dir, filename) for
                                    filename in os.listdir(image_dir)])
         self.label_paths = sorted([os.path.join(label_dir, filename) for
@@ -47,6 +47,7 @@ class ProMRIDataSet(Dataset):
         label = torch.from_numpy(label.astype(np.uint8)).squeeze(0)
         print(label.shape)
 
+        # Perform given transformation
         sample = {"image": image, "label": label}
         if self.transformer:
             self.transformer(sample)
