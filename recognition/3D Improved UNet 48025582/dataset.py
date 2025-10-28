@@ -43,7 +43,7 @@ class ProMRIDataSet(Dataset):
         image = (image - image.mean()) / image.std()
 
         # convert to tensor
-        image = torch.from_numpy(image.astype(np.float32))
+        image = torch.from_numpy(image.astype(np.float32)).unsqueeze(0)
         label = torch.from_numpy(label.astype(np.uint8)).squeeze(0)
         print(label.shape)
 
