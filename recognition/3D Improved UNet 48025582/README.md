@@ -24,5 +24,4 @@
 ## References
 [1] J. Dowling, P. Greer, (2021), "Labelled weekly MR images of the male pelvis", doi: https://doi.org/10.25919/45t8-p065
 
-[2] F. Isensee, P Kickingereder, W. Wick, M. Bendszus, K. Maier-Hein, (2018), "Brain Tumor Segmentation and Radiomics Survival Prediction: Contribution to the BRATS 2017 Challenge", doi: https://doi.org/10.48550/arXiv.1802.10508
-
+[2] F. Isensee, P Kickingereder, W. Wick, M. Bendszus, K. H. Maier-Hein, (2018), "Brain Tumor Segmentation and Radiomics Survival Prediction: Contribution to the BRATS 2017 Challenge", doi: https://doi.org/10.48550/arXiv.1802.10508
