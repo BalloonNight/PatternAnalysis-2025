@@ -33,7 +33,6 @@ class ProMRIDataSet(Dataset):
         # Load the image and label
         image = nib.load(self.image_paths[idx]).get_fdata().astype(np.float32)
         label = nib.load(self.label_paths[idx]).get_fdata().astype(np.uint8)
-        print(label.shape)
 
         # one hot encoding
         label = to_channels(label, np.uint8)
@@ -45,10 +44,9 @@ class ProMRIDataSet(Dataset):
         # convert to tensor
         image = torch.from_numpy(image.astype(np.float32)).unsqueeze(0)
         label = torch.from_numpy(label.astype(np.uint8)).squeeze(0)
-        print(label.shape)
 
         # Perform given transformation
-        sample = {"image": image, "label": label}
+        sample = (image, label)
         if self.transformer:
             self.transformer(sample)
 
@@ -57,7 +55,7 @@ class ProMRIDataSet(Dataset):
 
 class Transformer3D:
     def __call__(self, sample):
-        image, label = sample['image'], sample['label']
+        image, label = sample
 
         # random rotations
         # random scaling
@@ -65,7 +63,7 @@ class Transformer3D:
         # gamma correction augmentation
         # mirroring
 
-        sample['image'], sample['label'] = image, label
+        sample = (image, label)
 
         return sample
 
