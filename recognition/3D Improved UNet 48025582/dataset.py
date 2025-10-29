@@ -59,7 +59,11 @@ class Transformer3D:
     def __call__(self, sample):
         image, label = sample['image'], sample['label']
 
-        # stuff like random flips
+        # random rotations
+        # random scaling
+        # random elastic deformations
+        # gamma correction augmentation
+        # mirroring
 
         sample['image'], sample['label'] = image, label
 

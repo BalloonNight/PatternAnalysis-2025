@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """model.py
-An implementation of the 3D Improved UNet3D module from [2].
+An implementation of the 3D Improved UNet3D module from [2]. With code loosely
+inspired for pytorch functions and some structures [3].
 
-References for [2] can be found in README.md
+References for [2] and [3] can be found in README.md
 """
 import torch
 import torch.nn as nn
