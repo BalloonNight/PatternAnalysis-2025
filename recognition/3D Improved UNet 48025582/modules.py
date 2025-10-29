@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """model.py
 An implementation of the 3D Improved UNet3D module from [2]. With code loosely
-inspired for pytorch functions and some structures [3].
+inspired for pytorch functions and some structures [3]. And some
+explanation/documentation is inspired off [2].
 
 References for [2] and [3] can be found in README.md
 """
@@ -11,8 +12,7 @@ import torch.nn as nn
 # global constants
 DEFAULT_DROPOUT = 0.3
 NEGATIVE_SLOPE = 1e-2
-N_CLASSES = 6
-BASE_FILTERS = 16
+BASE_CHANNELS = 16
 
 class ContextModule(nn.Module):
     """This class handles the context module for the UNet algorithm.
@@ -42,7 +42,7 @@ class ContextModule(nn.Module):
             in_channels (int): num of in channels.
             out_channels (int): num of out channels, default double in channels.
             stride (int): stride, default 2.
-            dropout_p (float): probability of each channel being randomly zeroed
+            dropout_p (float): % of features zeroed
              out, default DEFAULT_DROPOUT.
         """
         super().__init__()
@@ -95,7 +95,7 @@ class LocalizationModule(nn.Module):
     """This class handles the localization module for the algorithm.
 
     as per [2], this consists of a 3x3x3 convolution followed by a 1x1x1
-    convolution which halves the number of feature maps.
+    convolution which halves the number of channels.
 
     Attributes:
         normalization1: 1st layer InstanceNorm3d.
@@ -150,7 +150,7 @@ class UpsamplingModule(nn.Module):
     """This class handles the upsampling module for the algorithm.
 
     As per [2], this consists an upscale that repeats feature voxels twice, and
-    then a 3x3x3 convolution that half's the feature map.
+    then a 3x3x3 convolution that half's the channels.
 
     Attributes:
         upsample: A Upsample layer.
@@ -195,9 +195,9 @@ class ImprovedUNet3D(nn.Module):
 
     Attributes:
         in_channels: number of starting channels.
-        filters: number of filters.
-        n_classes: number of classes.
-        dropout_p: chance of channels being set to 0 during training.
+        base_channels: number of channels.
+        n_labels: number of labels.
+        dropout_p: % of the features set to 0 during training.
         context1: 1st layer context module.
         context2: 2nd layer context module.
         context3: 3rd layer context module.
@@ -218,57 +218,58 @@ class ImprovedUNet3D(nn.Module):
         segment1: 1st layer segmentation layer.
         smax1: 1st layer softmax.
     """
-    def __init__(self, in_channels: int, filters=BASE_FILTERS,
-                 n_classes=N_CLASSES, dropout_p=DEFAULT_DROPOUT):
+    def __init__(self, in_channels: int, n_labels: int, base_channels: int =
+    BASE_CHANNELS, dropout_p: float = DEFAULT_DROPOUT):
         """Initializes the 3D Improved UNet 3D module.
 
         Args:
             in_channels: number of starting channels.
-            filters: number of filters.
-            n_classes: number of classes.
-            dropout_p: chance of channels being set to 0 during training.
+            n_labels: number of labels.
+            base_channels: number of base channels.
+            dropout_p: % of features set to 0 during training.
         """
         super().__init__()
         # input vars
         self.in_channels = in_channels
-        self.filters = filters
-        self.n_classes = n_classes
+        self.base_channels = base_channels
+        self.n_labels = n_labels
         self.dropout_p = dropout_p
 
         # Encoder/Context Pathway
-        self.context1 = ContextModule(self.in_channels, self.filters, 1,
+        self.context1 = ContextModule(self.in_channels, self.base_channels, 1,
                                       self.dropout_p)
-        self.context2 = ContextModule(self.filters, dropout_p=self.dropout_p)
-        self.context3 = ContextModule(self.filters * 2,
+        self.context2 = ContextModule(self.base_channels,
                                       dropout_p=self.dropout_p)
-        self.context4 = ContextModule(self.filters * 4,
+        self.context3 = ContextModule(self.base_channels * 2,
                                       dropout_p=self.dropout_p)
-        self.context5 = ContextModule(self.filters * 8,
+        self.context4 = ContextModule(self.base_channels * 4,
+                                      dropout_p=self.dropout_p)
+        self.context5 = ContextModule(self.base_channels * 8,
                                       dropout_p=self.dropout_p)
 
         # Decoder/Localization Pathway
-        self.upsample5 = UpsamplingModule(self.filters * 16)
-        self.localization4 = LocalizationModule(self.filters * 16)
-        self.upsample4 = UpsamplingModule(self.filters * 8)
-        self.localization3 = LocalizationModule(self.filters * 8)
-        self.upsample3 = UpsamplingModule(self.filters * 4)
-        self.localization2 = LocalizationModule(self.filters * 4)
-        self.upsample2 = UpsamplingModule(self.filters * 2)
+        self.upsample5 = UpsamplingModule(self.base_channels * 16)
+        self.localization4 = LocalizationModule(self.base_channels * 16)
+        self.upsample4 = UpsamplingModule(self.base_channels * 8)
+        self.localization3 = LocalizationModule(self.base_channels * 8)
+        self.upsample3 = UpsamplingModule(self.base_channels * 4)
+        self.localization2 = LocalizationModule(self.base_channels * 4)
+        self.upsample2 = UpsamplingModule(self.base_channels * 2)
         self.convolution1 = nn.Conv3d(
-            self.filters * 2, self.filters * 2,
+            self.base_channels * 2, self.base_channels * 2,
             kernel_size=3, stride=1, padding=1, bias=False)
 
         # Segmentation
         self.segment3 = nn.Conv3d(
-            self.filters * 4, self.n_classes,
+            self.base_channels * 4, self.n_labels,
             kernel_size=1, stride=1, padding=0, bias=False)
         self.upscale3 = nn.Upsample(scale_factor=2, mode='nearest')
         self.segment2 = nn.Conv3d(
-            self.filters * 2, self.n_classes,
+            self.base_channels * 2, self.n_labels,
             kernel_size=1, stride=1, padding=0, bias=False)
         self.upscale2 = nn.Upsample(scale_factor=2, mode='nearest')
         self.segment1 = nn.Conv3d(
-            self.filters * 2, self.n_classes,
+            self.base_channels * 2, self.n_labels,
             kernel_size=1, stride=1, padding=0, bias=False)
         self.smax1 = nn.Softmax(dim=1)
 
@@ -295,7 +296,7 @@ class ImprovedUNet3D(nn.Module):
 
         # Decoder/Localization Pathway
         out = self.upsample5(out)
-        # note: concatenation doubles the number of output filters
+        # note: concatenation doubles the number of output channels
         out = torch.cat([out, context_layer_4_out], dim=1)
         out = self.localization4(out)
         out = self.upsample4(out)
