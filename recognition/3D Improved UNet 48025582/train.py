@@ -48,7 +48,7 @@ class Trainer:
         # Hyper Parameters
         self.n_labels = 6
         self.batch_size = 2
-        self.num_epochs = 300
+        self.num_epochs = 10
         self.on_cluster = False
         self.learning_rate = 5e-4
         self.lr_schedule = 0.985
@@ -57,6 +57,7 @@ class Trainer:
         self.validate_split = 0.1
         self.test_split = 0.1
         self.num_workers = 0
+        self.persistent_workers = True if self.num_workers > 0 else False
         self.smooth = 1e-6
 
         # Components
@@ -85,6 +86,7 @@ class Trainer:
                                        self.rangpur_label_path)
         else:
             dataset = ds.ProMRIDataSet(self.pc_scan_path, self.pc_label_path)
+
         # determine dataset sizes
         dataset_length = int(len(dataset) * self.scale_data_size)
         validate_size = int(self.validate_split * dataset_length)
@@ -92,12 +94,33 @@ class Trainer:
         train_size = dataset_length - validate_size - test_size
         unused_size = len(dataset) - train_size - validate_size - test_size
         data_lengths = [train_size, validate_size, test_size, unused_size]
+
         # Distribute dataset among loaders
         self.train_set, self.validate_set, self.test_set, self.unused_set = (
             random_split(dataset, data_lengths))
-        self.train_loader = DataLoader(self.train_set)
-        self.test_loader = DataLoader(self.test_set)
-        self.validate_loader = DataLoader(self.validate_set)
+
+        # DataLoaders
+        self.train_loader = DataLoader(
+            self.train_set,
+            batch_size=self.batch_size,
+            shuffle=True,
+            pin_memory=True,
+            num_workers=self.num_workers,
+            persistent_workers=self.persistent_workers)
+        self.validate_loader = DataLoader(
+            self.validate_set,
+            batch_size=self.batch_size,
+            shuffle=False,
+            pin_memory=True,
+            num_workers=self.num_workers,
+            persistent_workers=self.persistent_workers)
+        self.test_loader = DataLoader(
+            self.test_set,
+            batch_size=self.batch_size,
+            shuffle=False,
+            pin_memory=True,
+            num_workers=self.num_workers,
+            persistent_workers=self.persistent_workers)
         self.unused_loader = DataLoader(self.unused_set)
         print(
             f"data loaders created (using "
@@ -113,8 +136,11 @@ class Trainer:
         """Train the model, code modified from [4]"""
         print("Training 3D Improved UNet3D...")
         self.model.to(self.device)
+        torch.backends.cudnn.benchmark = True
         optimizer = torch.optim.Adam(self.model.parameters(),
-                                     lr=self.learning_rate)
+                                     lr=self.learning_rate,
+                                     weight_decay=self.weight_decay)
+        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=self.lr_schedule)
 
         # Tracking times
         start_time = time.time()
@@ -142,8 +168,8 @@ class Trainer:
             accuracy = 0
             for batch_idx, (images, true_labels) in enumerate(
                     self.train_loader):
-                images, true_labels = images.to(self.device), true_labels.to(
-                    self.device)
+                images = images.to(self.device, non_blocking=True)
+                true_labels = true_labels.to(self.device, non_blocking=True)
 
                 # Forwards pass
                 optimizer.zero_grad()
@@ -194,9 +220,14 @@ class Trainer:
             with torch.no_grad():
                 for batch_idx, (images, true_labels) in enumerate(
                         self.validate_loader):
-                    images, true_labels = (images.to(self.device),
-                                           true_labels.to(self.device))
+                    # load data
+                    images = images.to(self.device, non_blocking=True)
+                    true_labels = true_labels.to(self.device, non_blocking=True)
+
+                    # predict
                     predict_labels = self.model(images)
+
+                    # get losses
                     cur_loss, cur_coefficients = self.multiclass_dice_loss(
                         predict_labels, true_labels)
                     multi_dice_loss += cur_loss.item()
@@ -227,6 +258,9 @@ class Trainer:
                   f"        Loss: {avg_loss:.4f}\n"
                   f"        Coefficients: {[f'{c:.4f}' for c in avg_coefficients]}\n"
                   f"        Accuracy: {avg_accuracy:.4f}")
+
+            # step the learning rate scheduling
+            scheduler.step()
 
             # Visualize
             if (epoch + 1) >= next_vis or (epoch + 1) == 0 or (epoch + 1) == self.num_epochs:
