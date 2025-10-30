@@ -46,14 +46,14 @@ class Trainer:
         os.makedirs(self.image_save_path, exist_ok=True)
 
         # Hyper Parameters
-        self.n_labels = 2
-        self.batch_size = 8
+        self.n_labels = 6
+        self.batch_size = 4
         self.num_epochs = 10
         self.on_cluster = False
         self.learning_rate = 5e-4
         self.lr_schedule = 0.99 # 0.985
         self.weight_decay = 1e-5
-        self.scale_data_size = 1
+        self.scale_data_size = 0.1
         self.validate_split = 0.1
         self.test_split = 0.1
         self.smooth = 1e-6
@@ -71,7 +71,6 @@ class Trainer:
         self.train_loader = None
         self.test_loader = None
         self.validate_loader = None
-        self.unused_loader = None
         self.init_data_loaders()
         self.model = md.ImprovedUNet3D(1, self.n_labels, base_channels=8)
 
@@ -99,10 +98,20 @@ class Trainer:
         # split up samples
         train_dirs, validate_dirs, test_dirs, unused_dirs = ds.random_split(samples, data_lengths)
 
+        print(
+            f"data loaders being created (using "
+            f"{sum(data_lengths[:2])}/{len(samples)}, "
+            f"{(sum(data_lengths[:2]) / len(samples)) * 100:.4f}%):\n"
+            f"    data langths: {data_lengths}\n"
+            f"    train loader: size={len(train_dirs)}\n"
+            f"    validate loader: size={len(validate_dirs)}\n"
+            f"    test loader: size={len(test_dirs)}\n"
+            f"    unsued loader: size={len(unused_dirs)}"
+        )
+
         self.train_set = ds.ProMRIDataSet(train_dirs, device=self.device, augment=True)
         self.validate_set = ds.ProMRIDataSet(validate_dirs, device=self.device)
         self.test_set = ds.ProMRIDataSet(test_dirs, device=self.device)
-        self.unused_set = ds.ProMRIDataSet(unused_dirs, device=self.device)
 
         # DataLoaders
         self.train_loader = DataLoader(
@@ -117,15 +126,15 @@ class Trainer:
             self.test_set,
             batch_size=self.batch_size,
             shuffle=False)
-        self.unused_loader = DataLoader(self.unused_set)
+        total = len(self.train_loader) + len(self.validate_loader) + len(self.test_loader)
         print(
             f"data loaders created (using "
-            f"{sum(data_lengths[:2])}/{len(samples)}, "
-            f"{(sum(data_lengths[:2]) / len(samples)) * 100:.4f}%):\n"
+            f"{total}/{len(samples)}, "
+            f"{(total / len(samples)) * 100:.4f}%):\n"
             f"    train loader: size={len(self.train_loader)}\n"
             f"    validate loader: size={len(self.validate_loader)}\n"
             f"    test loader: size={len(self.test_loader)}\n"
-            f"    unsued loader: size={len(self.unused_loader)}"
+            f"    unsued loader: size={len(unused_dirs)}"
         )
 
     def train(self):
@@ -285,6 +294,7 @@ class Trainer:
         multi_dice_loss = 0
         dice_coefficients = [0, 0, 0, 0, 0, 0, 0]
         accuracy = 0
+        worst_coefficient = np.inf
         with torch.no_grad():
             for batch_idx, (images, true_labels) in enumerate(
                     self.validate_loader):
@@ -303,6 +313,10 @@ class Trainer:
                     dice_coefficients, cur_coefficients)]
                 accuracy += self.compute_accuracy(predict_labels,
                                                   true_labels)
+
+                for coefficient in dice_coefficients:
+                    if worst_coefficient > coefficient:
+                        worst_coefficient = coefficient
 
                 # Reshape from [B, C, H, W, D] to [H, W, D]
                 image = images[0, 0, :, :, :].cpu().numpy()
@@ -335,6 +349,11 @@ class Trainer:
               f"        Loss: {avg_loss:.4f}\n"
               f"        Coefficients: {[f'{c:.4f}' for c in avg_coefficients]}\n"
               f"        Accuracy: {avg_accuracy:.4f}")
+
+        title = f"Final Model {worst_coefficient}"
+        self.save_model()
+
+
 
     def show_graphs(self, train_losses, train_coefficients, train_accuracy, validate_losses, validate_coefficients, validate_accuracy):
         # convert to np
@@ -534,6 +553,15 @@ class Trainer:
         print(f"File to be saved: {filename}")
         return filepath
 
+    def save_model(self, model_name):
+        """Save the current model.
+
+        Args:
+            model_name: The name to save the current model as.
+        """
+        filename = self.get_formatted_filepath(self.model_save_path, model_name, "pt")
+        torch.save(self.model, filename)
+
     @staticmethod
     def compute_accuracy(predictions: torch.Tensor,
                          targets: torch.Tensor) -> torch.Tensor:
@@ -551,6 +579,6 @@ class Trainer:
         targets_labeled = torch.argmax(targets, dim=1)
         return torch.mean((predictions_labeled == targets_labeled).float()).item()
 
-
-trainer = Trainer()
-trainer.train()
+if __name__ == "__main__":
+    trainer = Trainer()
+    trainer.train()
