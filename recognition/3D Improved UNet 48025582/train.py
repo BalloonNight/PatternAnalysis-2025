@@ -51,7 +51,7 @@ class Trainer:
         self.num_epochs = 10
         self.on_cluster = False
         self.learning_rate = 5e-4
-        self.lr_schedule = 0.985
+        self.lr_schedule = 0.99 # 0.985
         self.weight_decay = 1e-5
         self.scale_data_size = 1
         self.validate_split = 0.1
@@ -120,8 +120,8 @@ class Trainer:
         self.unused_loader = DataLoader(self.unused_set)
         print(
             f"data loaders created (using "
-            f"{sum(data_lengths[:2])}/{len(dataset)}, "
-            f"{(sum(data_lengths[:2]) / len(dataset)) * 100:.4f}%):\n"
+            f"{sum(data_lengths[:2])}/{len(samples)}, "
+            f"{(sum(data_lengths[:2]) / len(samples)) * 100:.4f}%):\n"
             f"    train loader: size={len(self.train_loader)}\n"
             f"    validate loader: size={len(self.validate_loader)}\n"
             f"    test loader: size={len(self.test_loader)}\n"
@@ -133,7 +133,7 @@ class Trainer:
         print("Training 3D Improved UNet3D...")
         self.model.to(self.device)
         torch.backends.cudnn.benchmark = True
-        optimizer = torch.optim.Adam(self.model.parameters(),
+        optimizer = torch.optim.AdamW(self.model.parameters(),
                                      lr=self.learning_rate,
                                      weight_decay=self.weight_decay)
         scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=self.lr_schedule)
@@ -172,7 +172,7 @@ class Trainer:
                 optimizer.zero_grad()
 
                 # Get the prediction and its dice loss
-                with torch.amp.autocast():
+                with torch.amp.autocast(str(self.device)):
                     predict_labels = self.model(images)
                     cur_loss, cur_coefficients = self.multiclass_dice_loss(
                         predict_labels, true_labels)
@@ -275,8 +275,129 @@ class Trainer:
 
         end = time.time()
         elapsed = end - start_time
-        print(f"Training time: {elapsed:.4f} seconds / "
-              f"{elapsed/60:.4f} minutes")
+        print(f"Training time: {elapsed/60:.4f} minutes")
+
+        # plot training data
+        self.show_graphs(train_losses, train_coefficients, train_accuracy, validate_losses, validate_coefficients, validate_accuracy)
+
+        # test training data
+        self.model.eval()
+        multi_dice_loss = 0
+        dice_coefficients = [0, 0, 0, 0, 0, 0, 0]
+        accuracy = 0
+        with torch.no_grad():
+            for batch_idx, (images, true_labels) in enumerate(
+                    self.validate_loader):
+                # load data
+                images = images.to(self.device)
+                true_labels = true_labels.to(self.device)
+
+                # predict
+                predict_labels = self.model(images)
+
+                # get losses
+                cur_loss, cur_coefficients = self.multiclass_dice_loss(
+                    predict_labels, true_labels)
+                multi_dice_loss += cur_loss.item()
+                dice_coefficients = [x + y for x, y in zip(
+                    dice_coefficients, cur_coefficients)]
+                accuracy += self.compute_accuracy(predict_labels,
+                                                  true_labels)
+
+                # Reshape from [B, C, H, W, D] to [H, W, D]
+                image = images[0, 0, :, :, :].cpu().numpy()
+                true_label = torch.argmax(true_labels, dim=1)[0, :, :, :
+                ].cpu().numpy()
+                predict_label = torch.argmax(predict_labels, dim=1)[0, :, :, :
+                ].cpu().numpy()
+                title = f"Testing Batch {batch_idx}"
+                self.plot_3d_image(image, true_label, predict_label, title)
+
+                # Check in
+                if time.time() >= checkin_time:
+                    print(f"    Checkin:\n"
+                          f"        time passed: {time.time() - start_time:.4f}\n"
+                          f"        batch_inx: {batch_idx}\n"
+                          f"        curr_loss: {multi_dice_loss / (batch_idx + 1):.4f}\n"
+                          f"        curr_coefficient: {[f'{c / (batch_idx + 1):.4f}' for c in dice_coefficients]}\n"
+                          f"        accuracy: {accuracy / (batch_idx + 1):.4f}")
+                    checkin_time = time.time() + checkin_interval
+
+        # update training losses
+        avg_loss = multi_dice_loss / len(self.validate_loader)
+        avg_coefficients = [x / len(self.validate_loader) for x in
+                            dice_coefficients]
+        avg_accuracy = accuracy / len(self.validate_loader)
+        validate_losses.append(avg_loss)
+        validate_coefficients.append(avg_coefficients)
+        validate_accuracy.append(avg_accuracy)
+        print(f"    Testing:\n"
+              f"        Loss: {avg_loss:.4f}\n"
+              f"        Coefficients: {[f'{c:.4f}' for c in avg_coefficients]}\n"
+              f"        Accuracy: {avg_accuracy:.4f}")
+
+    def show_graphs(self, train_losses, train_coefficients, train_accuracy, validate_losses, validate_coefficients, validate_accuracy):
+        # convert to np
+        train_losses = train_losses.cpu().numpy()
+        train_coefficients = train_coefficients.cpu().numpy()
+        train_accuracy = train_accuracy.cpu().numpy()
+        validate_losses = validate_losses.cpu().numpy()
+        validate_coefficients = validate_coefficients.cpu().numpy()
+        validate_accuracy = validate_accuracy.cpu().numpy()
+
+        fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+        title = f"Graphed Training Data"
+        fig.suptitle(title, fontsize=16, fontweight='bold')
+
+        # dice loss
+        axes[0, 0].plot(train_losses, label="Train Losses")
+        axes[0, 0].plot(validate_losses, label="Validate Losses")
+        axes[0, 0].set_title("Dice loss")
+        axes[0, 0].xlabel("EPOCH")
+        axes[0, 0].ylabel("Dice Loss")
+        axes[0, 0].legend()
+
+        # accuracy
+        axes[1, 0].plot(train_accuracy, label="Train Accuracy")
+        axes[1, 0].plot(validate_accuracy, label="Validate Accuracy")
+        axes[0, 0].set_title("Accuracy")
+        axes[1, 0].xlabel("EPOCH")
+        axes[1, 0].ylabel("Accuracy")
+        axes[1, 0].legend()
+
+        # train coefficients
+        background, body, bones, bladder, rectum, prostate, multiclass = zip(*train_coefficients)
+        axes[0, 1].plot(background, label="Background")
+        axes[0, 1].plot(body, label="Body")
+        axes[0, 1].plot(bones, label="Bones")
+        axes[0, 1].plot(bladder, label="Bladder")
+        axes[0, 1].plot(rectum, label="Rectum")
+        axes[0, 1].plot(prostate, label="Prostate")
+        axes[0, 1].plot(multiclass, label="Multiclass")
+        axes[0, 1].set_title("Training Dice Similarity Coefficient")
+        axes[0, 1].xlabel("EPOCH")
+        axes[0, 1].ylabel("Dice Similarity Coefficient")
+        axes[0, 1].legend(fontsize="small")
+
+        # validation coefficients
+        background, body, bones, bladder, rectum, prostate, multiclass = zip(*validate_coefficients)
+        axes[1, 1].plot(background, label="Background")
+        axes[1, 1].plot(body, label="Body")
+        axes[1, 1].plot(bones, label="Bones")
+        axes[1, 1].plot(bladder, label="Bladder")
+        axes[1, 1].plot(rectum, label="Rectum")
+        axes[1, 1].plot(prostate, label="Prostate")
+        axes[1, 1].plot(multiclass, label="Multiclass")
+        axes[1, 1].set_title("Validate Dice Similarity Coefficient")
+        axes[1, 1].xlabel("EPOCH")
+        axes[1, 1].ylabel("Dice Similarity Coefficient")
+        axes[1, 1].legend(fontsize="small")
+
+        # save
+        plt.tight_layout()
+        save_path = self.get_formatted_filepath(self.image_save_path, title, "png")
+        plt.savefig(save_path)
+        plt.close()
 
     def show_predictions(self, epoch: int):
         """Show model predictions. Code modified from [4].
@@ -391,7 +512,7 @@ class Trainer:
                                         bitrate=1800)
         save_path = self.get_formatted_filepath(self.image_save_path, title, "gif")
         ani.save(save_path, writer=writer, dpi=80)
-        return ani
+        plt.close()
 
     def get_formatted_filepath(self, path: str, name: str, type: str) -> str:
         """Given a filename returns a formatted one with its full path better for saving.
