@@ -140,8 +140,8 @@ class Trainer:
                 # Check in
                 if time.time() >= checkin_time:
                     print(f"    Checkin: time passed: "
-                          f"{time.time() - start_time}, batch_inx: {batch_idx},"
-                          f" curr_loss: {train_loss}")
+                          f"{time.time() - start_time:.4f}, batch_inx: {batch_idx},"
+                          f" curr_loss: {train_loss:.4f}")
                     checkin_time = time.time() + checkin_interval
             # update training losses
             avg_loss = train_loss / len(self.train_loader)
@@ -161,14 +161,14 @@ class Trainer:
                     # Check in
                     if time.time() >= checkin_time:
                         print(f"    Checkin: time passed: "
-                              f"{time.time() - start_time}, batch_inx: {batch_idx},"
-                              f" curr_loss: {train_loss}")
+                              f"{time.time() - start_time:.4f}, batch_inx: {batch_idx},"
+                              f" curr_loss: {train_loss:.4f}")
                         checkin_time = time.time() + checkin_interval
             # update validation losses
             avg_loss = validate_loss / len(self.validate_loader)
             validate_losses.append(avg_loss)
             print(f'    Validate Loss: {avg_loss:.4f}')
-            print(f"    Time: {(time.time() - start_time) / 60:.2f} min")
+            print(f"    Time: {(time.time() - start_time) / 60:.4f} min")
 
             # Visualize
             if ((epoch + 1) >= next_vis or epoch == 0 or epoch ==
@@ -178,11 +178,11 @@ class Trainer:
                 next_vis *= 2
                 print(
                     f"    Visualization Time: "
-                    f"{time.time() - vis_start_time:.2f} seconds")
+                    f"{time.time() - vis_start_time:.4f} seconds")
 
         end = time.time()
         elapsed = end - start_time
-        print(f"Training time: {elapsed} seconds / {elapsed/60} minutes")
+        print(f"Training time: {elapsed:.4f} seconds / {elapsed/60:.4f} minutes")
 
     def show_predictions(self, epoch: int, n: int = 2):
         """Show model predictions.
@@ -232,7 +232,7 @@ class Trainer:
                 axes[2, plot_index].imshow(prediction_label, cmap='tab10', vmin=0, vmax=5)
                 accuracy = np.mean(prediction_label == true_label)
                 axes[2, plot_index].set_title(
-                    f'Prediction {i} (Acc: {accuracy:.3f})',
+                    f'Prediction {data_index} (Acc: {accuracy:.3f})',
                     fontweight='bold')
                 axes[2, plot_index].axis('off')
 
