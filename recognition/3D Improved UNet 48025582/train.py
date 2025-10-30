@@ -4,6 +4,9 @@ An implementation of training the 3D Improved UNet3D module.
 
 Reference for [4] and [5] can be found in README.md
 """
+import os
+import re
+import shutil
 import time
 import matplotlib.animation as animation
 from matplotlib import pyplot as plt
@@ -36,6 +39,11 @@ class Trainer:
         self.pc_label_path = "./semantic_labels_anon"
         self.model_save_path = "./output/model"
         self.image_save_path = "./output/results"
+
+        # File saving
+        self.training_time = int(time.time())
+        os.makedirs(self.model_save_path, exist_ok=True)
+        os.makedirs(self.image_save_path, exist_ok=True)
 
         # Hyper Parameters
         self.n_labels = 6
@@ -126,6 +134,7 @@ class Trainer:
         print("Starting training...")
         for epoch in range(self.num_epochs):
             print(f'Epoch [{epoch + 1}/{self.num_epochs}]:')
+            epoch_start_time = time.time()
             # Training loop with progress
             self.model.train()
             multi_dice_loss = 0
@@ -156,13 +165,12 @@ class Trainer:
 
                 # Check in
                 if time.time() >= checkin_time:
-                    print(f"    Checkin: time passed: "
-                          f"{time.time() - start_time:.4f}, "
-                          f"batch_inx: {batch_idx}, "
-                          f"curr_loss: {multi_dice_loss:.4f}, "
-                          f"curr_coefficient: {dice_coefficients:.4f}, "
-                          f"accuracy: {accuracy}"
-                          )
+                    print(f"    Checkin:\n"
+                          f"        time passed: {time.time() - start_time:.4f}\n"
+                          f"        batch_inx: {batch_idx}\n"
+                          f"        curr_loss: {multi_dice_loss:.4f}\n"
+                          f"        curr_coefficient: {[f'{c:.4f}' for c in dice_coefficients]}\n"
+                          f"        accuracy: {accuracy}")
                     checkin_time = time.time() + checkin_interval
 
             # update training losses
@@ -173,8 +181,10 @@ class Trainer:
             train_losses.append(avg_loss)
             train_coefficients.append(avg_coefficients)
             train_accuracy.append(avg_accuracy)
-            print(f'    Train: Loss: {avg_loss:.4f}, Coefficients: '
-                  f'{avg_coefficients:.4f}, Accuracy: {avg_accuracy}')
+            print(f"    Train:\n"
+                  f"        Loss: {avg_loss:.4f}\n"
+                  f"        Coefficients: {[f'{c:.4f}' for c in dice_coefficients]}\n"
+                  f"        Accuracy: {avg_accuracy}")
 
             # Validation Loop
             self.model.eval()
@@ -197,25 +207,26 @@ class Trainer:
 
                     # Check in
                     if time.time() >= checkin_time:
-                        print(f"    Checkin: time passed: "
-                              f"{time.time() - start_time:.4f}, "
-                              f"batch_inx: {batch_idx}, "
-                              f"curr_loss: {multi_dice_loss:.4f}, "
-                              f"curr_coefficient: {dice_coefficients:.4f}, "
-                              f"accuracy: {accuracy}"
-                              )
+                        print(f"    Checkin:\n"
+                              f"        time passed: {time.time() - start_time:.4f}\n"
+                              f"        batch_inx: {batch_idx}\n"
+                              f"        curr_loss: {multi_dice_loss:.4f}\n"
+                              f"        curr_coefficient: {[f'{c:.4f}' for c in dice_coefficients]}\n"
+                              f"        accuracy: {accuracy}")
                         checkin_time = time.time() + checkin_interval
 
             # update training losses
             avg_loss = multi_dice_loss / len(self.validate_loader)
             avg_coefficients = [x / len(self.validate_loader) for x in
                                 dice_coefficients]
-            avg_accuracy = accuracy / len(self.train_loader)
+            avg_accuracy = accuracy / len(self.validate_loader)
             validate_losses.append(avg_loss)
             validate_coefficients.append(avg_coefficients)
             validate_accuracy.append(avg_accuracy)
-            print(f'    Validate: Loss: {avg_loss:.4f}, Coefficients: '
-                  f'{avg_coefficients:.4f}, Accuracy: {avg_accuracy}')
+            print(f"    Validation:\n"
+                  f"        Loss: {avg_loss:.4f}\n"
+                  f"        Coefficients: {[f'{c:.4f}' for c in dice_coefficients]}\n"
+                  f"        Accuracy: {avg_accuracy}")
 
             # Visualize
             if (epoch >= next_vis or epoch == 0 or epoch ==
@@ -226,6 +237,9 @@ class Trainer:
                 print(
                     f"    Visualization Time: "
                     f"{time.time() - vis_start_time:.4f} seconds")
+
+            epoch_time = time.time() - epoch_start_time
+            print(f"    Epoch time: {epoch_time}")
 
         end = time.time()
         elapsed = end - start_time
@@ -239,7 +253,6 @@ class Trainer:
             epoch: the epoch number this is being printed on.
         """
         print("Performing prediction visualization...")
-        start_time = time.time()
         # get the data to display
         self.model.eval()
         with torch.no_grad():
@@ -257,15 +270,12 @@ class Trainer:
             ].cpu().numpy()
 
             # Plotting
-            title = f"Predictions After Epoch {epoch}"
+            title = f"Epoch_{epoch}_Prediction"
             self.plot_3d_image(image, true_label, predict_label, title)
-
-        elapsed = time.time() - start_time
-        print(f"visualise time: {elapsed:.4f} seconds")
 
     def multiclass_dice_loss(self, predictions: torch.Tensor,
                              targets: torch.Tensor) \
-            -> tuple[torch.Tensor, list[float]]:
+            -> tuple[float, list[float]]:
         """Calculates the Multiclass Dice Loss of the prediction, tensors must
         be in the shape [B, L, H, W, D]. Code modified from [4].
 
@@ -277,10 +287,10 @@ class Trainer:
             targets: Ground truth, shape: [B, L, H, W, D]
 
         Returns:
-            tuple[torch.Tensor, list[float]]: Multiclass Dice Loss, List of each
+            tuple[float, list[float]]: Multiclass Dice Loss, List of each
              individual labels and the multiclass Dice coefficient.
         """
-        total_dice_coefficient = torch.Tensor(0).to(self.device)
+        total_dice_coefficient = 0.0
         dice_coefficients = []
         # go through each label type
         for l in range(self.n_labels):
@@ -296,10 +306,11 @@ class Trainer:
             total_dice_coefficient += dice_coefficient
             dice_coefficients.append(dice_coefficient)
 
-        dice_coefficients.append(total_dice_coefficient / self.n_labels)
+        avg_dice_coefficient = total_dice_coefficient / self.n_labels
+        dice_coefficients.append(avg_dice_coefficient)
 
         # Return Dice Loss (1 - Dice Coefficient)
-        return 1 - (total_dice_coefficient / self.n_labels), dice_coefficients
+        return 1 - avg_dice_coefficient, dice_coefficients
 
     def plot_3d_image(self, image: np.ndarray, true_label: np.ndarray,
                       predict_label: np.ndarray, title: str):
@@ -317,9 +328,10 @@ class Trainer:
         predict_label = np.flip(np.transpose(predict_label, axes=[0, 2, 1]),
                                 axis=1)
 
-        fig, axes = plt.subplots(3, figsize=(6, 6))
+        fig, axes = plt.subplots(3, figsize=(6, 12))
         axes[0].set_title(f"Image")
-        axes[1].set_title(f"Label")
+        axes[1].set_title(f"Real Label")
+        axes[2].set_title(f"Predict Label")
 
         vmin_img = np.min(image)
         vmax_img = np.max(image)
@@ -328,7 +340,7 @@ class Trainer:
                                  vmax=vmax_img, animated=True)
         imshow2 = axes[1].imshow(true_label[0], cmap='tab10', vmin=0, vmax=5,
                                  animated=True)
-        imshow3 = axes[1].imshow(predict_label[0], cmap='tab10', vmin=0, vmax=5,
+        imshow3 = axes[2].imshow(predict_label[0], cmap='tab10', vmin=0, vmax=5,
                                  animated=True)
 
         def update(frame):
@@ -345,25 +357,46 @@ class Trainer:
 
         writer = animation.PillowWriter(fps=120, metadata=dict(artist='Me'),
                                         bitrate=1800)
-        ani.save(self.image_save_path, writer=writer, dpi=80)
+        save_path = self.get_formatted_filepath(self.image_save_path, title, "gif")
+        ani.save(save_path, writer=writer, dpi=80)
         return ani
+
+    def get_formatted_filepath(self, path: str, name: str, type: str) -> str:
+        """Given a filename returns a formatted one with its full path better for saving.
+
+        Args:
+            path: path the file will be going
+            name: unformatted name of the file.
+            type: the name of the filetype
+
+        Returns:
+            str: properly formatted filepath.
+        """
+        # Get rid of weird characters
+        filename = "".join(char if char.isalnum() else "_" for char in name)
+        filename = re.sub(r'_+', '_', filename)  # get rid of multiple _
+        filename = filename.strip('_')  # remove trailing _
+        filename = f"{filename}_{self.training_time}.{type}"
+        filepath = os.path.join(path, filename)
+        print(f"File to be saved: {filename}")
+        return filepath
 
     @staticmethod
     def compute_accuracy(predictions: torch.Tensor,
-                         targets: torch.Tensor) -> np.floating:
+                         targets: torch.Tensor) -> torch.Tensor:
         """Given a predicted and true labeling of an entire 3D image,
         returns the accuracy of the predicted labeling.
 
         Args:
-            predictions: Output from model, shape: [B, L, H, W, D]
-            targets: Ground truth, shape: [B, L, H, W, D]
+            predictions: Output from model, shape: [B, L, H, W, D].
+            targets: Ground truth, shape: [B, L, H, W, D].
 
         Returns:
-
+            torch.Tensor: the accuracy of the prediction.
         """
-        predictions_labeled = torch.argmax(predictions, dim=1).cpu().numpy()
-        targets_labeled = torch.argmax(targets, dim=1).cpu().numpy()
-        return np.mean(predictions_labeled == targets_labeled)
+        predictions_labeled = torch.argmax(predictions, dim=1)
+        targets_labeled = torch.argmax(targets, dim=1)
+        return torch.mean(predictions_labeled == targets_labeled, dtype=torch.float32)
 
 
 trainer = Trainer()
