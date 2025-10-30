@@ -123,8 +123,6 @@ class Trainer:
             train_loss = 0
             for batch_idx, (images, masks) in enumerate(self.train_loader):
                 images, masks = images.to(self.device), masks.to(self.device)
-                print(f"image shape: {images.shape}")
-                print(f"masks shape: {masks.shape}")
 
                 # Forwards pass
                 optimizer.zero_grad()
@@ -157,8 +155,6 @@ class Trainer:
                 for batch_idx, (images, masks) in enumerate(self.validate_loader):
                     images, masks = images.to(self.device), masks.to(
                         self.device)
-                    print(f"image shape: {images.shape}")
-                    print(f"masks shape: {masks.shape}")
                     outputs = self.model(images)
                     loss = criterion(outputs, masks)
                     validate_loss += loss.item()
