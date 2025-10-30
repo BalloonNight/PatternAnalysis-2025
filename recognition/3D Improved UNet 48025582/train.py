@@ -46,19 +46,22 @@ class Trainer:
         os.makedirs(self.image_save_path, exist_ok=True)
 
         # Hyper Parameters
-        self.n_labels = 6
-        self.batch_size = 2
+        self.n_labels = 2
+        self.batch_size = 8
         self.num_epochs = 10
         self.on_cluster = False
         self.learning_rate = 5e-4
         self.lr_schedule = 0.985
         self.weight_decay = 1e-5
-        self.scale_data_size = 0.1
+        self.scale_data_size = 1
         self.validate_split = 0.1
         self.test_split = 0.1
-        self.num_workers = 0
-        self.persistent_workers = True if self.num_workers > 0 else False
         self.smooth = 1e-6
+
+        # Device Config
+        self.device = torch.device('cuda' if torch.cuda.is_available() else
+                                   'cpu')
+        print(f'Using device: {self.device}')
 
         # Components
         self.train_set = None
@@ -72,55 +75,48 @@ class Trainer:
         self.init_data_loaders()
         self.model = md.ImprovedUNet3D(1, self.n_labels, base_channels=8)
 
-        # Device Config
-        self.device = torch.device('cuda' if torch.cuda.is_available() else
-                                   'cpu')
-        print(f'Using device: {self.device}')
-
     def init_data_loaders(self):
         """Initialize the data loaders"""
         print("defining data loaders...")
-        # pick data location and define dataset
+
+        # get image paths
         if self.on_cluster:
-            dataset = ds.ProMRIDataSet(self.rangpur_scan_path,
-                                       self.rangpur_label_path)
+            image_paths, label_paths = ds.get_data_path(self.rangpur_scan_path, self.rangpur_label_path)
         else:
-            dataset = ds.ProMRIDataSet(self.pc_scan_path, self.pc_label_path)
+            image_paths, label_paths = ds.get_data_path(self.pc_scan_path, self.pc_label_path)
+
+        # zip together teh lists
+        samples = list(zip(image_paths, label_paths))
 
         # determine dataset sizes
-        dataset_length = int(len(dataset) * self.scale_data_size)
+        dataset_length = int(len(samples) * self.scale_data_size)
         validate_size = int(self.validate_split * dataset_length)
         test_size = int(self.test_split * dataset_length)
         train_size = dataset_length - validate_size - test_size
-        unused_size = len(dataset) - train_size - validate_size - test_size
+        unused_size = len(samples) - train_size - validate_size - test_size
         data_lengths = [train_size, validate_size, test_size, unused_size]
 
-        # Distribute dataset among loaders
-        self.train_set, self.validate_set, self.test_set, self.unused_set = (
-            random_split(dataset, data_lengths))
+        # split up samples
+        train_dirs, validate_dirs, test_dirs, unused_dirs = ds.random_split(samples, data_lengths)
+
+        self.train_set = ds.ProMRIDataSet(train_dirs, device=self.device, augment=True)
+        self.validate_set = ds.ProMRIDataSet(validate_dirs, device=self.device)
+        self.test_set = ds.ProMRIDataSet(test_dirs, device=self.device)
+        self.unused_set = ds.ProMRIDataSet(unused_dirs, device=self.device)
 
         # DataLoaders
         self.train_loader = DataLoader(
             self.train_set,
             batch_size=self.batch_size,
-            shuffle=True,
-            pin_memory=True,
-            num_workers=self.num_workers,
-            persistent_workers=self.persistent_workers)
+            shuffle=True)
         self.validate_loader = DataLoader(
             self.validate_set,
             batch_size=self.batch_size,
-            shuffle=False,
-            pin_memory=True,
-            num_workers=self.num_workers,
-            persistent_workers=self.persistent_workers)
+            shuffle=False)
         self.test_loader = DataLoader(
             self.test_set,
             batch_size=self.batch_size,
-            shuffle=False,
-            pin_memory=True,
-            num_workers=self.num_workers,
-            persistent_workers=self.persistent_workers)
+            shuffle=False)
         self.unused_loader = DataLoader(self.unused_set)
         print(
             f"data loaders created (using "
@@ -145,8 +141,9 @@ class Trainer:
         # Tracking times
         start_time = time.time()
         next_vis = 1
-        checkin_interval = 30
+        checkin_interval = 60
         checkin_time = time.time() + checkin_interval
+        epoch_times = []
 
         # Tracking Data
         train_losses = []
@@ -168,17 +165,17 @@ class Trainer:
             accuracy = 0
             for batch_idx, (images, true_labels) in enumerate(
                     self.train_loader):
-                images = images.to(self.device, non_blocking=True)
-                true_labels = true_labels.to(self.device, non_blocking=True)
+                images = images.to(self.device)
+                true_labels = true_labels.to(self.device)
 
                 # Forwards pass
                 optimizer.zero_grad()
-                predict_labels = self.model(images)
 
-                # Calculate loss
-                cur_loss, cur_coefficients = self.multiclass_dice_loss(
-                    predict_labels, true_labels)
-                accuracy += self.compute_accuracy(predict_labels, true_labels)
+                # Get the prediction and its dice loss
+                with torch.amp.autocast():
+                    predict_labels = self.model(images)
+                    cur_loss, cur_coefficients = self.multiclass_dice_loss(
+                        predict_labels, true_labels)
 
                 # Backward pass
                 cur_loss.backward()
@@ -188,6 +185,7 @@ class Trainer:
                 multi_dice_loss += cur_loss.item()
                 dice_coefficients = [x + y for x, y in zip(dice_coefficients,
                                                            cur_coefficients)]
+                accuracy += self.compute_accuracy(predict_labels, true_labels)
 
                 # Check in
                 if time.time() >= checkin_time:
@@ -221,8 +219,8 @@ class Trainer:
                 for batch_idx, (images, true_labels) in enumerate(
                         self.validate_loader):
                     # load data
-                    images = images.to(self.device, non_blocking=True)
-                    true_labels = true_labels.to(self.device, non_blocking=True)
+                    images = images.to(self.device)
+                    true_labels = true_labels.to(self.device)
 
                     # predict
                     predict_labels = self.model(images)
@@ -262,6 +260,10 @@ class Trainer:
             # step the learning rate scheduling
             scheduler.step()
 
+            epoch_time = time.time() - epoch_start_time
+            epoch_times.append(epoch_time)
+            print(f"    Epoch Time: {epoch_time:.4f}, Average Epoch Time: {sum(epoch_times) / len(epoch_times)}")
+
             # Visualize
             if (epoch + 1) >= next_vis or (epoch + 1) == 0 or (epoch + 1) == self.num_epochs:
                 vis_start_time = time.time()
@@ -270,9 +272,6 @@ class Trainer:
                 print(
                     f"    Visualization Time: "
                     f"{time.time() - vis_start_time:.4f} seconds")
-
-            epoch_time = time.time() - epoch_start_time
-            print(f"    Epoch time: {epoch_time:.4f}")
 
         end = time.time()
         elapsed = end - start_time

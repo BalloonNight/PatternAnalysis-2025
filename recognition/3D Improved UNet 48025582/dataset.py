@@ -1,3 +1,5 @@
+import time
+
 import numpy as np
 import nibabel as nib
 import torch
@@ -5,8 +7,49 @@ from tqdm import tqdm
 import os
 from torch.utils.data import Dataset
 import torchio as tio
+import random
 
-# --------------------------- Define ProMRIDataSet --------------------------- #
+def get_data_path(image_dir: str, label_dir: str) -> tuple[list[str], list[str]]:
+    """Given the directories of the images and labels, gets the list of names for all of them.
+
+    Args:
+        image_dir: The directory of the images.
+        label_dir: The directory of the labels.
+
+    Returns:
+        tuple[list[str], list[str]]: Returns the list of image paths and list of label paths.
+    """
+    image_paths = sorted([os.path.join(image_dir, filename) for
+                               filename in os.listdir(image_dir)])
+    label_paths = sorted([os.path.join(label_dir, filename) for
+                               filename in os.listdir(label_dir)])
+    return image_paths, label_paths
+
+def random_split(data: list, lengths: list[int]) -> list[list]:
+    """Given a list of data and a list of lengths, will randomly split the data up amongst those lengths.
+
+    Args:
+        data: Data to be split up.
+        lengths: Lengths for the data to be split up into.
+
+    Returns:
+        list[list]: A list of sublists with random elements from data.
+    """
+    assert len(data) == sum(lengths)
+
+    # randomise list
+    shuffled = data.copy()
+    random.shuffle(shuffled)
+
+    # distribute list among sub lists
+    sub_data = []
+    index = 0
+    for length in lengths:
+        sub_data.append(shuffled[index:index + length])
+        index += 1
+
+    return sub_data
+
 
 class ProMRIDataSet(Dataset):
     """ Custom Dataset for the "Labelled weekly MR images of the male pelvis"
@@ -19,23 +62,35 @@ class ProMRIDataSet(Dataset):
         self.label_paths: the labels for the images
     """
 
-    def __init__(self, image_dir, label_dir, augment=False):
+    def __init__(self, sample_dirs, device='cpu', augment=False, pre_load=True):
         self.transformer = Transformer3D()
+        self.augmenter = Augmenter3D()
         self.augment = augment
-        # get a sorted list of all the files in the given directories
-        self.image_paths = sorted([os.path.join(image_dir, filename) for
-                                   filename in os.listdir(image_dir)])
-        self.label_paths = sorted([os.path.join(label_dir, filename) for
-                                   filename in os.listdir(label_dir)])
+        self.pre_load = pre_load
+        self.device = device
+        # Get a sorted list of all the files in the given directories
+        self.sample_dirs = sample_dirs
+        # Pre loading
+        self.samples = []
+        if pre_load:
+            self.preload_data()
 
-    def __len__(self):
-        return len(self.image_paths)
+    def set_augment(self, augment: bool):
+        self.augment = augment
 
-    def __getitem__(self, idx):
-        # Load the image and label
-        image = nib.load(self.image_paths[idx]).get_fdata().astype(np.float32)
-        label = nib.load(self.label_paths[idx]).get_fdata().astype(np.float32)
+    def preload_data(self):
+        for idx in range(len(self.sample_dirs)):
+            self.samples.append(self.load_sample(idx))
+            if idx % 10 == 0:
+                print(f"loaded: {idx}/{len(self.sample_dirs)}")
 
+    def load_sample(self, idx):
+        start_time = time.time()
+        # Get the image and label
+        image = nib.load(self.sample_dirs[idx][0]).get_fdata().astype(np.float32)
+        label = nib.load(self.sample_dirs[idx][1]).get_fdata().astype(np.float32)
+
+        start_time = time.time()
         # one hot encoding
         label = to_channels(label, np.float32)
         label = np.moveaxis(label, 3, 0)
@@ -46,7 +101,23 @@ class ProMRIDataSet(Dataset):
         image = image.unsqueeze(0)
 
         # Perform given transformation
-        image, label = self.transformer(image, label, self.augment)
+        image, label = self.transformer(image, label)
+
+        return image, label
+
+    def __len__(self):
+        return len(self.sample_dirs)
+
+    def __getitem__(self, idx):
+        # Load the data (depending on if its been pre_loaded or not)
+        if self.pre_load:
+            image, label = self.samples[idx]
+        else:
+            image, label = self.load_sample(idx)
+
+        # Augment if that's wanted
+        if self.augment:
+            image, label = self.augmenter(image, label)
 
         return image, label
 
@@ -63,14 +134,7 @@ class Transformer3D:
             tio.Lambda(lambda x: x * (x > 0.01), types_to_apply=[tio.INTENSITY])
         ])
 
-        self.augments = tio.Compose([
-            tio.RandomAffine(),
-            tio.RandomElasticDeformation(),
-            tio.RandomGamma(),
-            tio.RandomFlip(axes=(0, 1, 2))
-        ])
-
-    def __call__(self, image, label, augment):
+    def __call__(self, image, label):
         # format for tio
         sample = tio.Subject(
             image = tio.ScalarImage(tensor=image),
@@ -79,9 +143,26 @@ class Transformer3D:
         # apply generic transforms
         sample = self.transforms(sample)
         # apply augments if requested
-        if augment:
-            sample = self.augments(sample)
 
+        return sample['image'].data, sample['label'].data
+
+class Augmenter3D:
+    def __init__(self):
+        self.augments = tio.Compose([
+            tio.RandomAffine(),
+            tio.RandomElasticDeformation(),
+            tio.RandomGamma(),
+            tio.RandomFlip(axes=(0, 1, 2))
+        ])
+
+    def __call__(self, image, label):
+        # format for tio
+        sample = tio.Subject(
+            image = tio.ScalarImage(tensor=image),
+            label = tio.LabelMap(tensor=label)
+        )
+        # apply augments
+        sample = self.augments(sample)
         return sample['image'].data, sample['label'].data
 
 
@@ -96,76 +177,3 @@ def to_channels(arr: np.ndarray, dtype=np.uint8) -> np.ndarray:
         res[..., c:c+1][arr == c] = 1
 
     return res
-
-def load_data_3d(imageNames, normImage=False, categorical=False,
-                 dtype=np.float32, getAffines=False, orient=False,
-                 early_stop=False):
-    """
-    Load medical image data from names, cases list provided into a list for
-    each. This function pre - allocates 5D arrays for conv3d to avoid excessive
-     memory usage.
-
-    Args:
-        normImage: bool (normalise the image 0.0 -1.0).
-        orient: Apply orientation and resample image? Good for images with large
-            slice thickness or anisotropic resolution.
-        dtype: Type of the data. If dtype = np.uint8, it is assumed that the
-            data is labels.
-        early_stop: Stop loading pre-maturely? Leaves arrays mostly empty, for
-            quick loading and testing scripts.
-    """
-    affines = []
-
-    #~ interp = 'continuous'
-    interp = 'linear'
-    if dtype == np . uint8 : # assume labels
-        interp = 'nearest'
-
-    # get fixed size
-    num = len(imageNames)
-    niftiImage = nib.load(imageNames[0])
-    # if orient:
-        # niftiImage = im.applyOrientation(niftiImage, interpolation=interp, scale=1)
-        #~ testResultName = "oriented.nii.gz"
-        #~ niftiImage.to_filename(testResultName)
-    first_case = niftiImage.get_fdata(caching='unchanged')
-    if len(first_case.shape) == 4:
-        first_case = first_case[:,:,:,0] # sometimes extra dims, remove
-    if categorical:
-        first_case = to_channels(first_case, dtype = dtype)
-        rows, cols, depth, channels = first_case.shape
-        images = np.zeros((num ,rows ,cols ,depth ,channels ), dtype=dtype)
-    else:
-        rows, cols, depth = first_case . shape
-        images = np.zeros((num, rows, cols, depth), dtype=dtype)
-
-    for i, inName in enumerate(tqdm(imageNames)):
-        niftiImage = nib.load(inName)
-        # if orient:
-            # niftiImage = im.applyOrientation(niftiImage, interpolation=interp, scale =1)
-        inImage = niftiImage.get_fdata(caching='unchanged') # read disk only
-        affine = niftiImage.affine
-        if len(inImage.shape) == 4:
-            inImage = inImage[:, :, :, 0] # sometimes extra dims in HipMRI_study data
-        inImage = inImage[:, :, :depth] # clip slices
-        inImage = inImage.astype(dtype)
-        if normImage:
-            #~ inImage = inImage / np.linalg.norm(inImage)
-            #~ inImage = 255. * inImage / inImage.max()
-            inImage = (inImage - inImage.mean()) / inImage.std()
-        if categorical:
-            inImage = to_channels(inImage, dtype=dtype)
-            # ~ images [i ,: ,: ,: ,:] = inImage
-            images[i, :inImage.shape[0], :inImage.shape[1], :inImage.shape[2], :inImage.shape[3]] = inImage # with pad
-        else:
-            # ~ images [i ,: ,: ,:] = inImage
-            images [i, :inImage . shape [0] ,: inImage . shape [1] ,: inImage . shape [2]] = inImage # with pad
-
-        affines.append(affine)
-        if i > 20 and early_stop:
-            break
-
-    if getAffines:
-        return images, affines
-    else:
-        return images
