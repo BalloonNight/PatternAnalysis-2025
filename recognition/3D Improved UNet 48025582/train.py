@@ -168,9 +168,9 @@ class Trainer:
                     print(f"    Checkin:\n"
                           f"        time passed: {time.time() - start_time:.4f}\n"
                           f"        batch_inx: {batch_idx}\n"
-                          f"        curr_loss: {multi_dice_loss:.4f}\n"
-                          f"        curr_coefficient: {[f'{c:.4f}' for c in dice_coefficients]}\n"
-                          f"        accuracy: {accuracy}")
+                          f"        curr_loss: {multi_dice_loss / (batch_idx + 1):.4f}\n"
+                          f"        curr_coefficient: {[f'{c / (batch_idx + 1):.4f}' for c in dice_coefficients]}\n"
+                          f"        accuracy: {accuracy / (batch_idx + 1):.4f}")
                     checkin_time = time.time() + checkin_interval
 
             # update training losses
@@ -183,8 +183,8 @@ class Trainer:
             train_accuracy.append(avg_accuracy)
             print(f"    Train:\n"
                   f"        Loss: {avg_loss:.4f}\n"
-                  f"        Coefficients: {[f'{c:.4f}' for c in dice_coefficients]}\n"
-                  f"        Accuracy: {avg_accuracy}")
+                  f"        Coefficients: {[f'{c:.4f}' for c in avg_coefficients]}\n"
+                  f"        Accuracy: {avg_accuracy:.4f}")
 
             # Validation Loop
             self.model.eval()
@@ -210,9 +210,9 @@ class Trainer:
                         print(f"    Checkin:\n"
                               f"        time passed: {time.time() - start_time:.4f}\n"
                               f"        batch_inx: {batch_idx}\n"
-                              f"        curr_loss: {multi_dice_loss:.4f}\n"
-                              f"        curr_coefficient: {[f'{c:.4f}' for c in dice_coefficients]}\n"
-                              f"        accuracy: {accuracy}")
+                              f"        curr_loss: {multi_dice_loss / (batch_idx + 1):.4f}\n"
+                              f"        curr_coefficient: {[f'{c / (batch_idx + 1):.4f}' for c in dice_coefficients]}\n"
+                              f"        accuracy: {accuracy / (batch_idx + 1):.4f}")
                         checkin_time = time.time() + checkin_interval
 
             # update training losses
@@ -225,21 +225,20 @@ class Trainer:
             validate_accuracy.append(avg_accuracy)
             print(f"    Validation:\n"
                   f"        Loss: {avg_loss:.4f}\n"
-                  f"        Coefficients: {[f'{c:.4f}' for c in dice_coefficients]}\n"
-                  f"        Accuracy: {avg_accuracy}")
+                  f"        Coefficients: {[f'{c:.4f}' for c in avg_coefficients]}\n"
+                  f"        Accuracy: {avg_accuracy:.4f}")
 
             # Visualize
-            if (epoch >= next_vis or epoch == 0 or epoch ==
-                    self.num_epochs):
+            if (epoch + 1) >= next_vis or (epoch + 1) == 0 or (epoch + 1) == self.num_epochs:
                 vis_start_time = time.time()
-                self.show_predictions(epoch)
+                self.show_predictions((epoch + 1))
                 next_vis *= 2
                 print(
                     f"    Visualization Time: "
                     f"{time.time() - vis_start_time:.4f} seconds")
 
             epoch_time = time.time() - epoch_start_time
-            print(f"    Epoch time: {epoch_time}")
+            print(f"    Epoch time: {epoch_time:.4f}")
 
         end = time.time()
         elapsed = end - start_time
@@ -304,10 +303,10 @@ class Trainer:
             dice_coefficient = ((2.0 * intersection + self.smooth) /
                                 (union + self.smooth))
             total_dice_coefficient += dice_coefficient
-            dice_coefficients.append(dice_coefficient)
+            dice_coefficients.append(dice_coefficient.item())
 
         avg_dice_coefficient = total_dice_coefficient / self.n_labels
-        dice_coefficients.append(avg_dice_coefficient)
+        dice_coefficients.append(avg_dice_coefficient.item())
 
         # Return Dice Loss (1 - Dice Coefficient)
         return 1 - avg_dice_coefficient, dice_coefficients
@@ -396,7 +395,7 @@ class Trainer:
         """
         predictions_labeled = torch.argmax(predictions, dim=1)
         targets_labeled = torch.argmax(targets, dim=1)
-        return torch.mean(predictions_labeled == targets_labeled, dtype=torch.float32)
+        return torch.mean((predictions_labeled == targets_labeled).float()).item()
 
 
 trainer = Trainer()
