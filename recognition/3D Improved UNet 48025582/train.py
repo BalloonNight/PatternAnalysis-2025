@@ -5,17 +5,12 @@ An implementation of training the 3D Improved UNet3D module.
 Reference for [4] and [5] can be found in README.md
 """
 import time
-from functools import total_ordering
 import matplotlib.animation as animation
 from matplotlib import pyplot as plt
-from matplotlib.animation import ArtistAnimation
 from torch.utils.data import random_split, DataLoader
-from zmq.sugar import device
-
 import dataset as ds
 import modules as md
 import torch
-import torch.nn as nn
 import random
 import numpy as np
 
@@ -113,70 +108,100 @@ class Trainer:
         optimizer = torch.optim.Adam(self.model.parameters(),
                                      lr=self.learning_rate)
 
+        # Tracking times
         start_time = time.time()
         next_vis = 1
         checkin_interval = 30
         checkin_time = time.time() + checkin_interval
-        train_losses = []
-        validate_losses = []
 
+        # Tracking Data
+        train_losses = []
+        train_coefficients = []
+        train_accuracy = []
+        validate_losses = []
+        validate_coefficients = []
+        validate_accuracy = []
+
+        # start training loop
         print("Starting training...")
         for epoch in range(self.num_epochs):
             print(f'Epoch [{epoch + 1}/{self.num_epochs}]:')
             # Training loop with progress
             self.model.train()
-            train_loss = 0
-            for batch_idx, (images, masks) in enumerate(self.train_loader):
-                images, masks = images.to(self.device), masks.to(self.device)
+            multi_dice_loss = 0
+            dice_coefficients = [0, 0, 0, 0, 0, 0, 0]
+            accuracy = 0
+            for batch_idx, (images, true_labels) in enumerate(self.train_loader):
+                images, true_labels = images.to(self.device), true_labels.to(self.device)
 
                 # Forwards pass
                 optimizer.zero_grad()
-                outputs = self.model(images)
+                predict_labels = self.model(images)
 
                 # Calculate loss
-                loss, label_losses = self.multiclass_dice_loss(outputs, masks)
+                cur_loss, cur_coefficients = self.multiclass_dice_loss(predict_labels, true_labels)
+                accuracy += self.compute_accuracy(predict_labels, true_labels)
 
                 # Backward pass
-                loss.backward()
+                cur_loss.backward()
                 optimizer.step()
 
-                train_loss += loss.item()
+                # update current epoches loss's
+                multi_dice_loss += cur_loss.item()
+                dice_coefficients = [x + y for x, y in zip(dice_coefficients, cur_coefficients)]
 
                 # Check in
                 if time.time() >= checkin_time:
                     print(f"    Checkin: time passed: "
                           f"{time.time() - start_time:.4f}, "
                           f"batch_inx: {batch_idx}, "
-                          f"curr_loss: {train_loss:.4f}")
+                          f"curr_loss: {multi_dice_loss:.4f}"
+                          f"curr_coefficient: {dice_coefficients:.4f}"
+                          )
                     checkin_time = time.time() + checkin_interval
+
             # update training losses
-            avg_loss = train_loss / len(self.train_loader)
+            avg_loss = multi_dice_loss / len(self.train_loader)
+            avg_coefficients = [x / len(self.train_loader) for x in dice_coefficients]
+            avg_accuracy = accuracy / len(self.train_loader)
             train_losses.append(avg_loss)
-            print(f'    Train Loss: {avg_loss:.4f}')
+            train_coefficients.append(avg_coefficients)
+            train_accuracy.append(avg_accuracy)
+            print(f'    Train: Loss: {avg_loss:.4f}, Coefficients: {avg_coefficients:.4f}')
 
             # Validation Loop
             self.model.eval()
-            validate_loss = 0
+            multi_dice_loss = 0
+            dice_coefficients = [0, 0, 0, 0, 0, 0, 0]
+            accuracy = 0
             with torch.no_grad():
-                for batch_idx, (images, masks) in enumerate(self.validate_loader):
-                    images, masks = images.to(self.device), masks.to(
+                for batch_idx, (images, true_labels) in enumerate(self.validate_loader):
+                    images, true_labels = images.to(self.device), true_labels.to(
                         self.device)
-                    outputs = self.model(images)
-                    loss, label_losses = self.multiclass_dice_loss(outputs, masks)
-                    validate_loss += loss.item()
+                    predict_labels = self.model(images)
+                    cur_loss, cur_coefficients = self.multiclass_dice_loss(predict_labels, true_labels)
+                    multi_dice_loss += cur_loss.item()
+                    dice_coefficients = [x + y for x, y in zip(dice_coefficients, cur_coefficients)]
+                    accuracy += self.compute_accuracy(predict_labels, true_labels)
 
                     # Check in
                     if time.time() >= checkin_time:
                         print(f"    Checkin: time passed: "
-                              f"{time.time() - start_time:.4f}, batch_inx: {batch_idx},"
-                              f" curr_loss: {train_loss:.4f}")
+                              f"{time.time() - start_time:.4f}, "
+                              f"batch_inx: {batch_idx}, "
+                              f"curr_loss: {multi_dice_loss:.4f}"
+                              f"curr_coefficient: {dice_coefficients:.4f}"
+                              )
                         checkin_time = time.time() + checkin_interval
 
-            # update validation losses
-            avg_loss = validate_loss / len(self.validate_loader)
+            # update training losses
+            avg_loss = multi_dice_loss / len(self.validate_loader)
+            avg_coefficients = [x / len(self.validate_loader) for x in dice_coefficients]
+            avg_accuracy = accuracy / len(self.train_loader)
             validate_losses.append(avg_loss)
-            print(f'    Validate Loss: {avg_loss:.4f}')
-            print(f"    Time: {(time.time() - start_time) / 60:.4f} min")
+            validate_coefficients.append(avg_coefficients)
+            validate_accuracy.append(avg_accuracy)
+            print(f'    Validate: Loss: {avg_loss:.4f}, Coefficients: {avg_coefficients:.4f}')
 
             # Visualize
             if (epoch >= next_vis or epoch == 0 or epoch ==
@@ -205,7 +230,7 @@ class Trainer:
         with torch.no_grad():
             # get the first validate image and true label
             image, true_label = next(iter(self.validate_loader))
-            
+
             # predict the label
             predict_label = self.model(image.to(self.device))
 
@@ -236,10 +261,10 @@ class Trainer:
 
         Returns:
             tuple[torch.Tensor, list[float]]: Multiclass Dice Loss, List of each
-             individual labels Dice Loss.
+             individual labels and the multiclass Dice coefficient.
         """
         total_dice_coefficient = torch.Tensor(0)
-        dice_losses = []
+        dice_coefficients = []
         # go through each label type
         for l in range(self.n_labels):
             # Grab this label and flatten tensors
@@ -252,10 +277,12 @@ class Trainer:
             dice_coefficient = ((2.0 * intersection + self.smooth) /
                                 (union + self.smooth))
             total_dice_coefficient += dice_coefficient
-            dice_losses.append(1 - dice_coefficient)
+            dice_coefficients.append(dice_coefficient)
+
+        dice_coefficients.append(total_dice_coefficient / self.n_labels)
 
         # Return Dice Loss (1 - Dice Coefficient)
-        return 1 - (total_dice_coefficient / self.n_labels), dice_losses
+        return 1 - (total_dice_coefficient / self.n_labels), dice_coefficients
 
     def plot_3d_image(self, image: np.ndarray, true_label: np.ndarray, predict_label: np.ndarray, title: str):
         """Plots a 3d image by scrolling through one of its axis. modified from
