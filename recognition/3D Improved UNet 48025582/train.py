@@ -52,6 +52,10 @@ class Trainer:
         self.num_workers = 0
 
         # Components
+        self.train_set = None
+        self.test_set = None
+        self.validate_set = None
+        self.unused_set = None
         self.train_loader = None
         self.test_loader = None
         self.validate_loader = None
@@ -81,11 +85,11 @@ class Trainer:
         unused_size = len(dataset) - train_size - validate_size - test_size
         data_lengths = [train_size, validate_size, test_size, unused_size]
         # Distribute dataset among loaders
-        train_set, validate_set, test_set, unused_set = random_split(dataset, data_lengths)
-        self.train_loader = DataLoader(train_set)
-        self.test_loader = DataLoader(test_set)
-        self.validate_loader = DataLoader(validate_set)
-        self.unused_loader = DataLoader(unused_set)
+        self.train_set, self.validate_set, self.test_set, self.unused_set = random_split(dataset, data_lengths)
+        self.train_loader = DataLoader(self.train_set)
+        self.test_loader = DataLoader(self.test_set)
+        self.validate_loader = DataLoader(self.validate_set)
+        self.unused_loader = DataLoader(self.unused_set)
         print(
             f"data loaders created (using "
             f"{sum(data_lengths[:2])}/{len(dataset)}, "
@@ -119,6 +123,8 @@ class Trainer:
             train_loss = 0
             for batch_idx, (images, masks) in enumerate(self.train_loader):
                 images, masks = images.to(self.device), masks.to(self.device)
+                print(f"image shape: {images.shape}")
+                print(f"masks shape: {masks.shape}")
 
                 # Forwards pass
                 optimizer.zero_grad()
@@ -151,6 +157,8 @@ class Trainer:
                 for batch_idx, (images, masks) in enumerate(self.validate_loader):
                     images, masks = images.to(self.device), masks.to(
                         self.device)
+                    print(f"image shape: {images.shape}")
+                    print(f"masks shape: {masks.shape}")
                     outputs = self.model(images)
                     loss = criterion(outputs, masks)
                     validate_loss += loss.item()
@@ -180,19 +188,28 @@ class Trainer:
         elapsed = end - start_time
         print(f"Training time: {elapsed} seconds / {elapsed/60} minutes")
 
-    def show_predictions(self, epoch, n=3):
-        """Show model predictions."""
+    def show_predictions(self, epoch: int, n: int = 2):
+        """Show model predictions.
+
+        Args:
+            epoch: the epoch number this is being printed on
+            n: the number of extra random images to display
+        """
         print("Performing prediction visualization...")
         self.model.eval()
-        fig, axes = plt.subplots(3, n, figsize=(12, 9))
+        fig, axes = plt.subplots(3, n+1, figsize=(12, 9))
         fig.suptitle(f'Predictions After Epoch {epoch}', fontsize=16,
                      fontweight='bold')
 
+        # get random index
+        indexes = [0]
+        for i in range(n):
+            indexes.append(random.randint(0, len(self.validate_loader) - 1))
+
         with torch.no_grad():
-            for i in range(n):
-                images, true_masks = self.validate_loader[i]
-                images, true_masks = images.to(self.device), true_masks.to(
-                    self.device)
+            for plot_index, data_index in enumerate(indexes):
+                images, true_masks = self.validate_set[data_index]
+                images, true_masks = images.unsqueeze(0).to(self.device), true_masks.unsqueeze(0).to(self.device)
 
                 outputs = self.model(images)
                 # get the most likely label for each voxel
@@ -203,25 +220,25 @@ class Trainer:
                 # grab middle slices
                 slice_idx = images.shape[2] // 2
                 image = images[0, 0, slice_idx, :, :].cpu().numpy()
-                prediction_label = prediction_labels[1, slice_idx, :, :]
-                true_label = true_labels[1, slice_idx, :, :]
+                prediction_label = prediction_labels[0, slice_idx, :, :]
+                true_label = true_labels[0, slice_idx, :, :]
 
                 # Plotting
                 # Original Image
-                axes[0, i].imshow(image)
-                axes[0, i].set_title(f'Original {i + 1}', fontweight='bold')
-                axes[0, i].axis('off')
+                axes[0, plot_index].imshow(image, cmap='grey')
+                axes[0, plot_index].set_title(f'Original {data_index}', fontweight='bold')
+                axes[0, plot_index].axis('off')
                 # True Labels
-                axes[1, i].imshow(true_label, cmap='tab10', vmin=0, vmax=1)
-                axes[1, i].set_title(f'Ground Truth {i + 1}', fontweight='bold')
-                axes[1, i].axis('off')
+                axes[1, plot_index].imshow(true_label, cmap='tab10', vmin=0, vmax=5)
+                axes[1, plot_index].set_title(f'Ground Truth {data_index}', fontweight='bold')
+                axes[1, plot_index].axis('off')
                 # Prediction Labels
-                axes[2, i].imshow(prediction_label, cmap='tab10', vmin=0, vmax=1)
+                axes[2, plot_index].imshow(prediction_label, cmap='tab10', vmin=0, vmax=5)
                 accuracy = np.mean(prediction_label == true_label)
-                axes[2, i].set_title(
-                    f'Prediction {i + 1} (Acc: {accuracy:.3f})',
+                axes[2, plot_index].set_title(
+                    f'Prediction {i} (Acc: {accuracy:.3f})',
                     fontweight='bold')
-                axes[2, i].axis('off')
+                axes[2, plot_index].axis('off')
 
         plt.tight_layout()
         plt.show()

@@ -283,6 +283,7 @@ class ImprovedUNet3D(nn.Module):
             torch.Tensor: the forward passed feature map through the
              3D Improved UNet3D module.
         """
+        print(f"x shape: {x.shape}")
         # Encoder/Context Pathway
         out = self.context1(x)
         context_layer_1_out = out
@@ -293,12 +294,16 @@ class ImprovedUNet3D(nn.Module):
         out = self.context4(out)
         context_layer_4_out = out
         out = self.context5(out)
+        print(f"context5 shape: {out.shape}")
 
         # Decoder/Localization Pathway
         out = self.upsample5(out)
+        print(f"upsample5 shape: {out.shape}")
         # note: concatenation doubles the number of output channels
         out = torch.cat([out, context_layer_4_out], dim=1)
+        print(f"cat shape: {out.shape}")
         out = self.localization4(out)
+        print(f"localization4 shape: {out.shape}")
         out = self.upsample4(out)
         out = torch.cat([out, context_layer_3_out], dim=1)
         out = self.localization3(out)
