@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """train.py
-An implementation of training the 3D Improved UNet3D module with code modified
-from and based on [4].
+An implementation of training the 3D Improved UNet3D module.
 
-Reference for [4] can be found in README.md
+Reference for [4] and [5] can be found in README.md
 """
 import time
+from functools import total_ordering
+import matplotlib.animation as animation
 from matplotlib import pyplot as plt
+from matplotlib.animation import ArtistAnimation
 from torch.utils.data import random_split, DataLoader
+from zmq.sugar import device
+
 import dataset as ds
 import modules as md
 import torch
@@ -50,6 +54,7 @@ class Trainer:
         self.validate_split = 0.1
         self.test_split = 0.1
         self.num_workers = 0
+        self.smooth = 1e-6
 
         # Components
         self.train_set = None
@@ -85,7 +90,8 @@ class Trainer:
         unused_size = len(dataset) - train_size - validate_size - test_size
         data_lengths = [train_size, validate_size, test_size, unused_size]
         # Distribute dataset among loaders
-        self.train_set, self.validate_set, self.test_set, self.unused_set = random_split(dataset, data_lengths)
+        self.train_set, self.validate_set, self.test_set, self.unused_set = (
+            random_split(dataset, data_lengths))
         self.train_loader = DataLoader(self.train_set)
         self.test_loader = DataLoader(self.test_set)
         self.validate_loader = DataLoader(self.validate_set)
@@ -101,10 +107,9 @@ class Trainer:
         )
 
     def train(self):
-        """Train the model"""
+        """Train the model, code modified from [4]"""
         print("Training 3D Improved UNet3D...")
         self.model.to(self.device)
-        criterion = MulticlassDiceLoss(self.n_labels)
         optimizer = torch.optim.Adam(self.model.parameters(),
                                      lr=self.learning_rate)
 
@@ -129,7 +134,7 @@ class Trainer:
                 outputs = self.model(images)
 
                 # Calculate loss
-                loss = criterion(outputs, masks)
+                loss, label_losses = self.multiclass_dice_loss(outputs, masks)
 
                 # Backward pass
                 loss.backward()
@@ -140,8 +145,9 @@ class Trainer:
                 # Check in
                 if time.time() >= checkin_time:
                     print(f"    Checkin: time passed: "
-                          f"{time.time() - start_time:.4f}, batch_inx: {batch_idx},"
-                          f" curr_loss: {train_loss:.4f}")
+                          f"{time.time() - start_time:.4f}, "
+                          f"batch_inx: {batch_idx}, "
+                          f"curr_loss: {train_loss:.4f}")
                     checkin_time = time.time() + checkin_interval
             # update training losses
             avg_loss = train_loss / len(self.train_loader)
@@ -156,14 +162,16 @@ class Trainer:
                     images, masks = images.to(self.device), masks.to(
                         self.device)
                     outputs = self.model(images)
-                    loss = criterion(outputs, masks)
+                    loss, label_losses = self.multiclass_dice_loss(outputs, masks)
                     validate_loss += loss.item()
+
                     # Check in
                     if time.time() >= checkin_time:
                         print(f"    Checkin: time passed: "
                               f"{time.time() - start_time:.4f}, batch_inx: {batch_idx},"
                               f" curr_loss: {train_loss:.4f}")
                         checkin_time = time.time() + checkin_interval
+
             # update validation losses
             avg_loss = validate_loss / len(self.validate_loader)
             validate_losses.append(avg_loss)
@@ -171,7 +179,7 @@ class Trainer:
             print(f"    Time: {(time.time() - start_time) / 60:.4f} min")
 
             # Visualize
-            if ((epoch + 1) >= next_vis or epoch == 0 or epoch ==
+            if (epoch >= next_vis or epoch == 0 or epoch ==
                     self.num_epochs):
                 vis_start_time = time.time()
                 self.show_predictions(epoch)
@@ -184,97 +192,54 @@ class Trainer:
         elapsed = end - start_time
         print(f"Training time: {elapsed:.4f} seconds / {elapsed/60:.4f} minutes")
 
-    def show_predictions(self, epoch: int, n: int = 2):
-        """Show model predictions.
+    def show_predictions(self, epoch: int):
+        """Show model predictions. Code modified from [4].
 
         Args:
-            epoch: the epoch number this is being printed on
-            n: the number of extra random images to display
+            epoch: the epoch number this is being printed on.
         """
         print("Performing prediction visualization...")
+        start_time = time.time()
+        # get the data to display
         self.model.eval()
-        fig, axes = plt.subplots(3, n+1, figsize=(12, 9))
-        fig.suptitle(f'Predictions After Epoch {epoch}', fontsize=16,
-                     fontweight='bold')
-
-        # get random index
-        indexes = [0]
-        for i in range(n):
-            indexes.append(random.randint(0, len(self.validate_loader) - 1))
-
         with torch.no_grad():
-            for plot_index, data_index in enumerate(indexes):
-                images, true_masks = self.validate_set[data_index]
-                images, true_masks = images.unsqueeze(0).to(self.device), true_masks.unsqueeze(0).to(self.device)
+            # get the first validate image and true label
+            image, true_label = next(iter(self.validate_loader))
+            
+            # predict the label
+            predict_label = self.model(image.to(self.device))
 
-                outputs = self.model(images)
-                # get the most likely label for each voxel
-                # turns shape from [B, L, H, W, D] to [B, H, W, D]
-                prediction_labels = torch.argmax(outputs, dim=1).cpu().numpy()
-                true_labels = torch.argmax(true_masks, dim=1).cpu().numpy()
+            # Reshape from [B, C, H, W, D] to [H, W, D]
+            image = image[0, 0, :, :, :].cpu().numpy()
+            true_label = torch.argmax(true_label, dim=1)[0, :, :, :].cpu().numpy()
+            predict_label = torch.argmax(predict_label, dim=1)[0, :, :, :].cpu().numpy()
 
-                # grab middle slices
-                slice_idx = images.shape[2] // 2
-                image = images[0, 0, slice_idx, :, :].cpu().numpy()
-                prediction_label = prediction_labels[0, slice_idx, :, :]
-                true_label = true_labels[0, slice_idx, :, :]
+            # Plotting
+            title = f"Predictions After Epoch {epoch}"
+            self.plot_3d_image(image, true_label, predict_label, title)
 
-                # Plotting
-                # Original Image
-                axes[0, plot_index].imshow(image, cmap='grey')
-                axes[0, plot_index].set_title(f'Original {data_index}', fontweight='bold')
-                axes[0, plot_index].axis('off')
-                # True Labels
-                axes[1, plot_index].imshow(true_label, cmap='tab10', vmin=0, vmax=5)
-                axes[1, plot_index].set_title(f'Ground Truth {data_index}', fontweight='bold')
-                axes[1, plot_index].axis('off')
-                # Prediction Labels
-                axes[2, plot_index].imshow(prediction_label, cmap='tab10', vmin=0, vmax=5)
-                accuracy = np.mean(prediction_label == true_label)
-                axes[2, plot_index].set_title(
-                    f'Prediction {data_index} (Acc: {accuracy:.3f})',
-                    fontweight='bold')
-                axes[2, plot_index].axis('off')
+        elapsed = time.time() - start_time
+        print(f"visualise time: {elapsed:.4f} seconds")
 
-        plt.tight_layout()
-        plt.show()
-
-
-class MulticlassDiceLoss(nn.Module):
-    """Dice Loss for multiclass segmentation. code modified to a Multiclass dice
-    loss from [4].
-
-    Dice Loss = 1 - Dice Coefficient.
-    Dice Coefficient = (2/|K|) * sum((sum(u, v) / (sum(u) + sum(v))).
-
-    Attributes:
-        n_labels: The number of labels to calculate over.
-        smooth: Smoothing factor to avoid division by zero (default: 1e-6).
-    """
-
-    def __init__(self, n_labels: int, smooth: float = 1e-6):
-        """Initializes the multiclass dice loss class.
-
-        Args:
-            n_labels: The number of labels to calculate over.
-            smooth: Smoothing factor to avoid division by zero (default: 1e-6).
-        """
-        super().__init__()
-        self.smooth = smooth
-        self.n_labels = n_labels
-
-    def forward(self, predictions: torch.Tensor, targets: torch.Tensor):
+    def multiclass_dice_loss(self, predictions: torch.Tensor,
+                             targets: torch.Tensor) \
+            -> tuple[torch.Tensor, list[float]]:
         """Calculates the Multiclass Dice Loss of the prediction, tensors must
-        be in the shape [B, L, H, W, D].
+        be in the shape [B, L, H, W, D]. Code modified from [4].
+
+        Dice Loss = 1 - Dice Coefficient.
+        Dice Coefficient = (2/|K|) * sum((sum(u, v) / (sum(u) + sum(v))).
 
         Args:
             predictions: Output from model, shape: [B, L, H, W, D]
             targets: Ground truth, shape: [B, L, H, W, D]
 
         Returns:
-            torch.Tensor: Multiclass Dice Loss
+            tuple[torch.Tensor, list[float]]: Multiclass Dice Loss, List of each
+             individual labels Dice Loss.
         """
-        dice_coefficient = 0
+        total_dice_coefficient = torch.Tensor(0)
+        dice_losses = []
         # go through each label type
         for l in range(self.n_labels):
             # Grab this label and flatten tensors
@@ -284,11 +249,75 @@ class MulticlassDiceLoss(nn.Module):
             intersection = (prediction * target).sum()
             union = prediction.sum() + target.sum()
             # update dice coefficient
-            dice_coefficient += ((2. * intersection + self.smooth) /
-                                 (union + self.smooth))
+            dice_coefficient = ((2.0 * intersection + self.smooth) /
+                                (union + self.smooth))
+            total_dice_coefficient += dice_coefficient
+            dice_losses.append(1 - dice_coefficient)
 
         # Return Dice Loss (1 - Dice Coefficient)
-        return 1 - (dice_coefficient / self.n_labels)
+        return 1 - (total_dice_coefficient / self.n_labels), dice_losses
+
+    def plot_3d_image(self, image: np.ndarray, true_label: np.ndarray, predict_label: np.ndarray, title: str):
+        """Plots a 3d image by scrolling through one of its axis. modified from
+        [5]. The images must be of shape [H, W, D].
+
+        Args:
+            image: The 3D image to be plotted.
+            true_label: The true labeling for the MRI scan.
+            predict_label: The predicted labeling for the MRI scan.
+            title: The title to be put into the graph and file save name.
+        """
+        image = np.flip(np.transpose(image, axes=[0, 2, 1]), axis=1)
+        true_label = np.flip(np.transpose(true_label, axes=[0, 2, 1]), axis=1)
+        predict_label = np.flip(np.transpose(predict_label, axes=[0, 2, 1]), axis=1)
+
+        fig, axes = plt.subplots(3, figsize=(6, 6))
+        axes[0].set_title(f"Image")
+        axes[1].set_title(f"Label")
+
+        vmin_img = np.min(image)
+        vmax_img = np.max(image)
+
+        imshow1 = axes[0].imshow(image[0], cmap='gray', vmin=vmin_img,
+                                 vmax=vmax_img, animated=True)
+        imshow2 = axes[1].imshow(true_label[0], cmap='tab10', vmin=0, vmax=5,
+                                 animated=True)
+        imshow3 = axes[1].imshow(predict_label[0], cmap='tab10', vmin=0, vmax=5,
+                                 animated=True)
+
+        def update(frame):
+            imshow1.set_array(image[frame])
+            imshow2.set_array(true_label[frame])
+            imshow3.set_array(predict_label[frame])
+            return [imshow1, imshow2, imshow3]
+
+        ani = animation.FuncAnimation(fig, update, frames=image.shape[0],
+                                      interval=1, blit=True, repeat=True)
+
+        plt.suptitle(title, fontsize=14)
+        plt.tight_layout()
+
+        writer = animation.PillowWriter(fps=120, metadata=dict(artist='Me'), bitrate=1800)
+        ani.save(self.image_save_path, writer=writer, dpi=80)
+        return ani
+
+    @staticmethod
+    def compute_accuracy(predictions: torch.Tensor,
+                         targets: torch.Tensor) -> np.floating:
+        """Given a predicted and true labeling of an entire 3D image,
+        returns the accuracy of the predicted labeling.
+
+        Args:
+            predictions: Output from model, shape: [B, L, H, W, D]
+            targets: Ground truth, shape: [B, L, H, W, D]
+
+        Returns:
+
+        """
+        predictions_labeled = torch.argmax(predictions, dim=1).cpu().numpy()
+        targets_labeled = torch.argmax(targets, dim=1).cpu().numpy()
+        return np.mean(predictions_labeled == targets_labeled)
+
 
 trainer = Trainer()
 trainer.train()

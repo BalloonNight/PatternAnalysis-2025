@@ -5,6 +5,7 @@
 
 ## Description
 **INCOMPLETE**, describe the algorithm and how it solves the problem
+plotting the 3d image modified from [5]
 
 ## How 3D Improved UNet3D Works
 **INCOMPLETE**, describe the structure of the model
@@ -32,3 +33,5 @@ dice loss modified from [4]
 [3] P. K. Kao, *"Modified-3D-UNet-Pytorch"*, 2018, GitHub repository, [Online]. Available: https://github.com/pykao/Modified-3D-UNet-Pytorch
 
 [4] W. Dai, *COMP3710, "UNet_segmentation_code_demo.ipynb"*, course materials, The University of Queensland, 2025, [Access limited to enrolled students].
+
+[5] J. D. Hunter, *matplotlib.org, "Animated scatter saved as GIF"*, 2025, [Online]. Available: https://matplotlib.org/stable/gallery/animation/simple_scatter.html

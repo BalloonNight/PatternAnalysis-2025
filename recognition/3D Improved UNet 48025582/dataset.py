@@ -4,6 +4,7 @@ import torch
 from tqdm import tqdm
 import os
 from torch.utils.data import Dataset
+import torchio as tio
 
 # --------------------------- Define ProMRIDataSet --------------------------- #
 
@@ -18,8 +19,9 @@ class ProMRIDataSet(Dataset):
         self.label_paths: the labels for the images
     """
 
-    def __init__(self, image_dir, label_dir, transformer=None):
-        self.transformer = transformer
+    def __init__(self, image_dir, label_dir, augment=False):
+        self.transformer = Transformer3D()
+        self.augment = augment
         # get a sorted list of all the files in the given directories
         self.image_paths = sorted([os.path.join(image_dir, filename) for
                                    filename in os.listdir(image_dir)])
@@ -32,40 +34,55 @@ class ProMRIDataSet(Dataset):
     def __getitem__(self, idx):
         # Load the image and label
         image = nib.load(self.image_paths[idx]).get_fdata().astype(np.float32)
-        label = nib.load(self.label_paths[idx]).get_fdata().astype(np.uint8)
+        label = nib.load(self.label_paths[idx]).get_fdata().astype(np.float32)
 
         # one hot encoding
-        label = to_channels(label, np.uint8)
+        label = to_channels(label, np.float32)
         label = np.moveaxis(label, 3, 0)
 
-        # normalise
-        image = (image - image.mean()) / image.std()
-
         # convert to tensor
-        image = torch.from_numpy(image.astype(np.float32)).unsqueeze(0)
-        label = torch.from_numpy(label.astype(np.uint8)).squeeze(0)
+        image = torch.from_numpy(image.astype(np.float32))
+        label = torch.from_numpy(label.astype(np.float32))
+        image = image.unsqueeze(0)
 
         # Perform given transformation
-        sample = (image, label)
-        if self.transformer:
-            self.transformer(sample)
+        image, label = self.transformer(image, label, self.augment)
 
-        return sample
+        return image, label
 
 
 class Transformer3D:
-    def __call__(self, sample):
-        image, label = sample
+    def __init__(self):
+        self.transforms = tio.Compose([
+            tio.ZNormalization(),
+            tio.Resize((128, 128, 64)),
+            # decided by calculating the min, max value of each image, got the
+            # average, min and max of all of them
+            tio.Clamp(-0.75, 8.5),
+            tio.RescaleIntensity(),
+            tio.Lambda(lambda x: x * (x > 0.01), types_to_apply=[tio.INTENSITY])
+        ])
 
-        # random rotations
-        # random scaling
-        # random elastic deformations
-        # gamma correction augmentation
-        # mirroring
+        self.augments = tio.Compose([
+            tio.RandomAffine(),
+            tio.RandomElasticDeformation(),
+            tio.RandomGamma(),
+            tio.RandomFlip(axes=(0, 1, 2))
+        ])
 
-        sample = (image, label)
+    def __call__(self, image, label, augment):
+        # format for tio
+        sample = tio.Subject(
+            image = tio.ScalarImage(tensor=image),
+            label = tio.LabelMap(tensor=label)
+        )
+        # apply generic transforms
+        sample = self.transforms(sample)
+        # apply augments if requested
+        if augment:
+            sample = self.augments(sample)
 
-        return sample
+        return sample['image'].data, sample['label'].data
 
 
 # ------------------------ Appendix B Helper Functions ----------------------- #
