@@ -47,13 +47,13 @@ class Trainer:
 
         # Hyper Parameters
         self.n_labels = 6
-        self.batch_size = 4
-        self.num_epochs = 10
+        self.batch_size = 2
+        self.num_epochs = 300
         self.on_cluster = False
         self.learning_rate = 5e-4
-        self.lr_schedule = 0.99 # 0.985
+        self.lr_schedule = 0.985
         self.weight_decay = 1e-5
-        self.scale_data_size = 0.1
+        self.scale_data_size = 1
         self.validate_split = 0.1
         self.test_split = 0.1
         self.smooth = 1e-6
@@ -64,10 +64,6 @@ class Trainer:
         print(f'Using device: {self.device}')
 
         # Components
-        self.train_set = None
-        self.test_set = None
-        self.validate_set = None
-        self.unused_set = None
         self.train_loader = None
         self.test_loader = None
         self.validate_loader = None
@@ -109,21 +105,21 @@ class Trainer:
             f"    unsued loader: size={len(unused_dirs)}"
         )
 
-        self.train_set = ds.ProMRIDataSet(train_dirs, device=self.device, augment=True)
-        self.validate_set = ds.ProMRIDataSet(validate_dirs, device=self.device)
-        self.test_set = ds.ProMRIDataSet(test_dirs, device=self.device)
+        train_set = ds.ProMRIDataSetMonai(train_dirs, augment=True)
+        validate_set = ds.ProMRIDataSetMonai(validate_dirs)
+        test_set = ds.ProMRIDataSetMonai(test_dirs)
 
         # DataLoaders
         self.train_loader = DataLoader(
-            self.train_set,
+            train_set,
             batch_size=self.batch_size,
             shuffle=True)
         self.validate_loader = DataLoader(
-            self.validate_set,
+            validate_set,
             batch_size=self.batch_size,
             shuffle=False)
         self.test_loader = DataLoader(
-            self.test_set,
+            test_set,
             batch_size=self.batch_size,
             shuffle=False)
         total = len(self.train_loader) + len(self.validate_loader) + len(self.test_loader)
@@ -142,9 +138,10 @@ class Trainer:
         print("Training 3D Improved UNet3D...")
         self.model.to(self.device)
         torch.backends.cudnn.benchmark = True
-        optimizer = torch.optim.AdamW(self.model.parameters(),
+        optimizer = torch.optim.Adam(self.model.parameters(),
                                      lr=self.learning_rate,
                                      weight_decay=self.weight_decay)
+
         scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=self.lr_schedule)
 
         # Tracking times
@@ -181,10 +178,11 @@ class Trainer:
                 optimizer.zero_grad()
 
                 # Get the prediction and its dice loss
-                with torch.amp.autocast(str(self.device)):
-                    predict_labels = self.model(images)
-                    cur_loss, cur_coefficients = self.multiclass_dice_loss(
-                        predict_labels, true_labels)
+                # with torch.amp.autocast('cuda'):
+                predict_labels = self.model(images)
+                cur_loss, cur_coefficients = self.multiclass_dice_loss(
+                    predict_labels, true_labels)
+
 
                 # Backward pass
                 cur_loss.backward()
@@ -195,6 +193,15 @@ class Trainer:
                 dice_coefficients = [x + y for x, y in zip(dice_coefficients,
                                                            cur_coefficients)]
                 accuracy += self.compute_accuracy(predict_labels, true_labels)
+
+                """# Reshape from [B, C, H, W, D] to [H, W, D]
+                image = images[0, 0, :, :, :].cpu().numpy()
+                true_label = torch.argmax(true_labels, dim=1)[0, :, :, :
+                ].cpu().numpy()
+                predict_label = torch.argmax(predict_labels, dim=1)[0, :, :, :
+                ].cpu().numpy()
+                title = f"traning Batch testing {batch_idx}"
+                self.plot_3d_image(image, true_label, predict_label, title)"""
 
                 # Check in
                 if time.time() >= checkin_time:
@@ -297,7 +304,7 @@ class Trainer:
         worst_coefficient = np.inf
         with torch.no_grad():
             for batch_idx, (images, true_labels) in enumerate(
-                    self.validate_loader):
+                    self.test_loader):
                 # load data
                 images = images.to(self.device)
                 true_labels = true_labels.to(self.device)
@@ -338,10 +345,10 @@ class Trainer:
                     checkin_time = time.time() + checkin_interval
 
         # update training losses
-        avg_loss = multi_dice_loss / len(self.validate_loader)
-        avg_coefficients = [x / len(self.validate_loader) for x in
+        avg_loss = multi_dice_loss / len(self.test_loader)
+        avg_coefficients = [x / len(self.test_loader) for x in
                             dice_coefficients]
-        avg_accuracy = accuracy / len(self.validate_loader)
+        avg_accuracy = accuracy / len(self.test_loader)
         validate_losses.append(avg_loss)
         validate_coefficients.append(avg_coefficients)
         validate_accuracy.append(avg_accuracy)
@@ -351,19 +358,11 @@ class Trainer:
               f"        Accuracy: {avg_accuracy:.4f}")
 
         title = f"Final Model {worst_coefficient}"
-        self.save_model()
+        self.save_model(title)
 
 
 
     def show_graphs(self, train_losses, train_coefficients, train_accuracy, validate_losses, validate_coefficients, validate_accuracy):
-        # convert to np
-        train_losses = train_losses.cpu().numpy()
-        train_coefficients = train_coefficients.cpu().numpy()
-        train_accuracy = train_accuracy.cpu().numpy()
-        validate_losses = validate_losses.cpu().numpy()
-        validate_coefficients = validate_coefficients.cpu().numpy()
-        validate_accuracy = validate_accuracy.cpu().numpy()
-
         fig, axes = plt.subplots(2, 2, figsize=(12, 8))
         title = f"Graphed Training Data"
         fig.suptitle(title, fontsize=16, fontweight='bold')
@@ -372,16 +371,16 @@ class Trainer:
         axes[0, 0].plot(train_losses, label="Train Losses")
         axes[0, 0].plot(validate_losses, label="Validate Losses")
         axes[0, 0].set_title("Dice loss")
-        axes[0, 0].xlabel("EPOCH")
-        axes[0, 0].ylabel("Dice Loss")
+        axes[0, 0].set_xlabel("EPOCH")
+        axes[0, 0].set_ylabel("Dice Loss")
         axes[0, 0].legend()
 
         # accuracy
         axes[1, 0].plot(train_accuracy, label="Train Accuracy")
         axes[1, 0].plot(validate_accuracy, label="Validate Accuracy")
         axes[0, 0].set_title("Accuracy")
-        axes[1, 0].xlabel("EPOCH")
-        axes[1, 0].ylabel("Accuracy")
+        axes[1, 0].set_xlabel("EPOCH")
+        axes[1, 0].set_ylabel("Accuracy")
         axes[1, 0].legend()
 
         # train coefficients
@@ -394,8 +393,8 @@ class Trainer:
         axes[0, 1].plot(prostate, label="Prostate")
         axes[0, 1].plot(multiclass, label="Multiclass")
         axes[0, 1].set_title("Training Dice Similarity Coefficient")
-        axes[0, 1].xlabel("EPOCH")
-        axes[0, 1].ylabel("Dice Similarity Coefficient")
+        axes[0, 1].set_xlabel("EPOCH")
+        axes[0, 1].set_ylabel("Dice Similarity Coefficient")
         axes[0, 1].legend(fontsize="small")
 
         # validation coefficients
@@ -408,8 +407,8 @@ class Trainer:
         axes[1, 1].plot(prostate, label="Prostate")
         axes[1, 1].plot(multiclass, label="Multiclass")
         axes[1, 1].set_title("Validate Dice Similarity Coefficient")
-        axes[1, 1].xlabel("EPOCH")
-        axes[1, 1].ylabel("Dice Similarity Coefficient")
+        axes[1, 1].set_xlabel("EPOCH")
+        axes[1, 1].set_ylabel("Dice Similarity Coefficient")
         axes[1, 1].legend(fontsize="small")
 
         # save

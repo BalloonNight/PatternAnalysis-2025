@@ -35,3 +35,5 @@ dice loss modified from [4]
 [4] W. Dai, *COMP3710, "UNet_segmentation_code_demo.ipynb"*, course materials, The University of Queensland, 2025, [Access limited to enrolled students].
 
 [5] J. D. Hunter, *matplotlib.org, "Animated scatter saved as GIF"*, 2025, [Online]. Available: https://matplotlib.org/stable/gallery/animation/simple_scatter.html
+
+[6] S. Chandra, *COMP3710, "Report Pattern Recognition"*, course materials, The University of Queensland, 2025, [Access limited to enrolled students].
