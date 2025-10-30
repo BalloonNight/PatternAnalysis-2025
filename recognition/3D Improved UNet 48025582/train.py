@@ -47,7 +47,7 @@ class Trainer:
 
         # Hyper Parameters
         self.n_labels = 6
-        self.batch_size = 2
+        self.batch_size = 4
         self.num_epochs = 300
         self.on_cluster = False
         self.learning_rate = 5e-4
@@ -57,6 +57,7 @@ class Trainer:
         self.validate_split = 0.1
         self.test_split = 0.1
         self.smooth = 1e-6
+        self.patience = 10
 
         # Device Config
         self.device = torch.device('cuda' if torch.cuda.is_available() else
@@ -113,15 +114,18 @@ class Trainer:
         self.train_loader = DataLoader(
             train_set,
             batch_size=self.batch_size,
-            shuffle=True)
+            shuffle=True,
+            pin_memory=True)
         self.validate_loader = DataLoader(
             validate_set,
             batch_size=self.batch_size,
-            shuffle=False)
+            shuffle=False,
+            pin_memory=True)
         self.test_loader = DataLoader(
             test_set,
             batch_size=self.batch_size,
-            shuffle=False)
+            shuffle=False,
+            pin_memory=True)
         total = len(self.train_loader) + len(self.validate_loader) + len(self.test_loader)
         print(
             f"data loaders created (using "
@@ -151,6 +155,10 @@ class Trainer:
         checkin_time = time.time() + checkin_interval
         epoch_times = []
 
+        # Early stop
+        best_loss = 1
+        counter = 0
+
         # Tracking Data
         train_losses = []
         train_coefficients = []
@@ -162,7 +170,7 @@ class Trainer:
         # start training loop
         print("Starting training...")
         for epoch in range(self.num_epochs):
-            print(f'Epoch [{epoch + 1}/{self.num_epochs}]:')
+            print(f'Epoch [{epoch + 1}/{self.num_epochs}], Patience [{counter}/{self.patience}]:')
             epoch_start_time = time.time()
             # Training loop with progress
             self.model.train()
@@ -180,9 +188,16 @@ class Trainer:
                 # Get the prediction and its dice loss
                 # with torch.amp.autocast('cuda'):
                 predict_labels = self.model(images)
-                cur_loss, cur_coefficients = self.multiclass_dice_loss(
-                    predict_labels, true_labels)
+                cur_loss, cur_coefficients = self.multiclass_dice_loss(predict_labels, true_labels)
 
+                """# Reshape from [B, C, H, W, D] to [H, W, D]
+                image = images[0, 0, :, :, :].cpu().numpy()
+                true_label = torch.argmax(true_labels, dim=1)[0, :, :, :
+                ].cpu().numpy()
+                predict_label = torch.argmax(predict_labels, dim=1)[0, :, :, :
+                ].cpu().numpy()
+                title = f"traning Batch testing {batch_idx}"
+                self.plot_3d_image(image, true_label, predict_label, title, cur_coefficients)"""
 
                 # Backward pass
                 cur_loss.backward()
@@ -193,15 +208,6 @@ class Trainer:
                 dice_coefficients = [x + y for x, y in zip(dice_coefficients,
                                                            cur_coefficients)]
                 accuracy += self.compute_accuracy(predict_labels, true_labels)
-
-                """# Reshape from [B, C, H, W, D] to [H, W, D]
-                image = images[0, 0, :, :, :].cpu().numpy()
-                true_label = torch.argmax(true_labels, dim=1)[0, :, :, :
-                ].cpu().numpy()
-                predict_label = torch.argmax(predict_labels, dim=1)[0, :, :, :
-                ].cpu().numpy()
-                title = f"traning Batch testing {batch_idx}"
-                self.plot_3d_image(image, true_label, predict_label, title)"""
 
                 # Check in
                 if time.time() >= checkin_time:
@@ -231,6 +237,7 @@ class Trainer:
             multi_dice_loss = 0
             dice_coefficients = [0, 0, 0, 0, 0, 0, 0]
             accuracy = 0
+            worst_coefficient = 1
             with torch.no_grad():
                 for batch_idx, (images, true_labels) in enumerate(
                         self.validate_loader):
@@ -242,13 +249,16 @@ class Trainer:
                     predict_labels = self.model(images)
 
                     # get losses
-                    cur_loss, cur_coefficients = self.multiclass_dice_loss(
-                        predict_labels, true_labels)
+                    cur_loss, cur_coefficients = self.multiclass_dice_loss(predict_labels, true_labels)
                     multi_dice_loss += cur_loss.item()
                     dice_coefficients = [x + y for x, y in zip(
                         dice_coefficients, cur_coefficients)]
                     accuracy += self.compute_accuracy(predict_labels,
                                                       true_labels)
+
+                    # track worst coefficient
+                    if worst_coefficient > min(cur_coefficients[:-1]):
+                        worst_coefficient = min(cur_coefficients[:-1])
 
                     # Check in
                     if time.time() >= checkin_time:
@@ -280,6 +290,16 @@ class Trainer:
             epoch_times.append(epoch_time)
             print(f"    Epoch Time: {epoch_time:.4f}, Average Epoch Time: {sum(epoch_times) / len(epoch_times)}")
 
+            # Early stop
+            if best_loss > avg_loss:
+                counter = 0
+                best_loss = avg_loss
+            else:
+                counter += 1
+
+            if counter > self.patience:
+                break
+
             # Visualize
             if (epoch + 1) >= next_vis or (epoch + 1) == 0 or (epoch + 1) == self.num_epochs:
                 vis_start_time = time.time()
@@ -301,8 +321,8 @@ class Trainer:
         multi_dice_loss = 0
         dice_coefficients = [0, 0, 0, 0, 0, 0, 0]
         accuracy = 0
-        worst_coefficient = np.inf
-        with torch.no_grad():
+        worst_coefficient = 1
+        with (torch.no_grad()):
             for batch_idx, (images, true_labels) in enumerate(
                     self.test_loader):
                 # load data
@@ -332,7 +352,7 @@ class Trainer:
                 predict_label = torch.argmax(predict_labels, dim=1)[0, :, :, :
                 ].cpu().numpy()
                 title = f"Testing Batch {batch_idx}"
-                self.plot_3d_image(image, true_label, predict_label, title)
+                self.plot_3d_image(image, true_label, predict_label, title, cur_coefficients)
 
                 # Check in
                 if time.time() >= checkin_time:
@@ -378,7 +398,7 @@ class Trainer:
         # accuracy
         axes[1, 0].plot(train_accuracy, label="Train Accuracy")
         axes[1, 0].plot(validate_accuracy, label="Validate Accuracy")
-        axes[0, 0].set_title("Accuracy")
+        axes[1, 0].set_title("Accuracy")
         axes[1, 0].set_xlabel("EPOCH")
         axes[1, 0].set_ylabel("Accuracy")
         axes[1, 0].legend()
@@ -433,6 +453,7 @@ class Trainer:
             # predict the label
             predict_label = self.model(image.to(self.device))
 
+            _, coefficients = self.multiclass_dice_loss(predict_label, true_label.to(self.device))
             # Reshape from [B, C, H, W, D] to [H, W, D]
             image = image[0, 0, :, :, :].cpu().numpy()
             true_label = torch.argmax(true_label, dim=1)[0, :, :, :
@@ -442,12 +463,11 @@ class Trainer:
 
             # Plotting
             title = f"Epoch_{epoch}_Prediction"
-            self.plot_3d_image(image, true_label, predict_label, title)
+            self.plot_3d_image(image, true_label, predict_label, title, coefficients)
 
     def multiclass_dice_loss(self, predictions: torch.Tensor,
-                             targets: torch.Tensor) \
-            -> tuple[float, list[float]]:
-        """Calculates the Multiclass Dice Loss of the prediction, tensors must
+                             targets: torch.Tensor) -> tuple[float, list[float]]:
+        """Calculates the Dice Coefficient of each label in the prediction, tensors must
         be in the shape [B, L, H, W, D]. Code modified from [4].
 
         Dice Loss = 1 - Dice Coefficient.
@@ -458,8 +478,7 @@ class Trainer:
             targets: Ground truth, shape: [B, L, H, W, D]
 
         Returns:
-            tuple[float, list[float]]: Multiclass Dice Loss, List of each
-             individual labels and the multiclass Dice coefficient.
+            tuple[float, list[float]]: List of each individual labels and the multiclass Dice coefficient.
         """
         total_dice_coefficient = 0.0
         dice_coefficients = []
@@ -481,10 +500,10 @@ class Trainer:
         dice_coefficients.append(avg_dice_coefficient.item())
 
         # Return Dice Loss (1 - Dice Coefficient)
-        return 1 - avg_dice_coefficient, dice_coefficients
+        return (1 - avg_dice_coefficient), dice_coefficients
 
     def plot_3d_image(self, image: np.ndarray, true_label: np.ndarray,
-                      predict_label: np.ndarray, title: str):
+                      predict_label: np.ndarray, title: str, dcs_values: list[float]):
         """Plots a 3d image by scrolling through one of its axis. modified from
         [5]. The images must be of shape [H, W, D].
 
@@ -493,39 +512,59 @@ class Trainer:
             true_label: The true labeling for the MRI scan.
             predict_label: The predicted labeling for the MRI scan.
             title: The title to be put into the graph and file save name.
+            dcs_values: List of all the dice coefficients for each label.
+             in order [Background, Body, Bone, Bladder, Rectum, Prostate, Multiclass].
         """
+        # flip to wanted orientation
         image = np.flip(np.transpose(image, axes=[0, 2, 1]), axis=1)
         true_label = np.flip(np.transpose(true_label, axes=[0, 2, 1]), axis=1)
         predict_label = np.flip(np.transpose(predict_label, axes=[0, 2, 1]),
                                 axis=1)
 
-        fig, axes = plt.subplots(3, figsize=(6, 12))
+        # make and label the subplots
+        fig, axes = plt.subplots(4, figsize=(6, 12))
         axes[0].set_title(f"Image")
         axes[1].set_title(f"Real Label")
         axes[2].set_title(f"Predict Label")
 
-        vmin_img = np.min(image)
-        vmax_img = np.max(image)
-
-        imshow1 = axes[0].imshow(image[0], cmap='gray', vmin=vmin_img,
-                                 vmax=vmax_img, animated=True)
+        # starting point for each graph
+        imshow1 = axes[0].imshow(image[0], cmap='gray', vmin=np.min(image),
+                                 vmax=np.max(image), animated=True)
         imshow2 = axes[1].imshow(true_label[0], cmap='tab10', vmin=0, vmax=5,
                                  animated=True)
         imshow3 = axes[2].imshow(predict_label[0], cmap='tab10', vmin=0, vmax=5,
                                  animated=True)
 
-        def update(frame):
+        # update function
+        def update(frame: int) -> list:
+            """Given the frame index, returns the frames do display in each subplot.
+
+            Args:
+                frame: the frame index
+
+            Returns:
+                list: list of the frames for each subplot.
+            """
             imshow1.set_array(image[frame])
             imshow2.set_array(true_label[frame])
             imshow3.set_array(predict_label[frame])
             return [imshow1, imshow2, imshow3]
 
+        # make the animator and title
         ani = animation.FuncAnimation(fig, update, frames=image.shape[0],
                                       interval=1, blit=True, repeat=True)
+
+
+        # add dcs values
+        axes[3].axis("off")
+        dcs_labels = ["Background", "Body", "Bone", "Bladder", "Rectum", "Prostate", "Multiclass"]
+        dcs_text = "\n".join([f"{label}: {value:.2f}" for label, value in zip(dcs_labels, dcs_values)])
+        axes[3].text(0, 0.5, f"DCS Scores:\n{dcs_text}", fontsize=18, va='center', ha='left')
 
         plt.suptitle(title, fontsize=14)
         plt.tight_layout()
 
+        # save the gif
         writer = animation.PillowWriter(fps=120, metadata=dict(artist='Me'),
                                         bitrate=1800)
         save_path = self.get_formatted_filepath(self.image_save_path, title, "gif")

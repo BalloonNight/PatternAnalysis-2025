@@ -167,7 +167,7 @@ class ProMRIDataSetMonai(CacheDataset):
             data=sample_dirs,
             transform=transformer,
             cache_rate=1.0,
-            num_workers=0,
+            num_workers=4,
             progress=True
         )
 
