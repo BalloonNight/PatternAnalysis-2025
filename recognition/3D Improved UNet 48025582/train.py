@@ -46,6 +46,7 @@ class Trainer:
         self.learning_rate = 5e-4
         self.lr_schedule = 0.985
         self.weight_decay = 1e-5
+        self.scale_data_size = 0.1
         self.validate_split = 0.1
         self.test_split = 0.1
         self.num_workers = 0
@@ -54,8 +55,9 @@ class Trainer:
         self.train_loader = None
         self.test_loader = None
         self.validate_loader = None
+        self.unused_loader = None
         self.init_data_loaders()
-        self.model = md.ImprovedUNet3D(1, self.n_labels)
+        self.model = md.ImprovedUNet3D(1, self.n_labels, base_channels=8)
 
         # Device Config
         self.device = torch.device('cuda' if torch.cuda.is_available() else
@@ -65,24 +67,33 @@ class Trainer:
     def init_data_loaders(self):
         """Initialize the data loaders"""
         print("defining data loaders...")
+        # pick data location and define dataset
         if self.on_cluster:
             dataset = ds.ProMRIDataSet(self.rangpur_scan_path,
                                        self.rangpur_label_path)
         else:
             dataset = ds.ProMRIDataSet(self.pc_scan_path, self.pc_label_path)
-        validate_size = int(self.validate_split * len(dataset))
-        test_size = int(self.test_split * len(dataset))
-        train_size = len(dataset) - validate_size - test_size
-        data_lengths = [train_size, validate_size, test_size]
-        train_set, validate_set, test_set = random_split(dataset, data_lengths)
+        # determine dataset sizes
+        dataset_length = int(len(dataset) * self.scale_data_size)
+        validate_size = int(self.validate_split * dataset_length)
+        test_size = int(self.test_split * dataset_length)
+        train_size = dataset_length - validate_size - test_size
+        unused_size = len(dataset) - train_size - validate_size - test_size
+        data_lengths = [train_size, validate_size, test_size, unused_size]
+        # Distribute dataset among loaders
+        train_set, validate_set, test_set, unused_set = random_split(dataset, data_lengths)
         self.train_loader = DataLoader(train_set)
         self.test_loader = DataLoader(test_set)
         self.validate_loader = DataLoader(validate_set)
+        self.unused_loader = DataLoader(unused_set)
         print(
-            f"data loaders created:\n"
+            f"data loaders created (using "
+            f"{sum(data_lengths[:2])}/{len(dataset)}, "
+            f"{(sum(data_lengths[:2]) / len(dataset)) * 100:.4f}%):\n"
             f"    train loader: size={len(self.train_loader)}\n"
             f"    validate loader: size={len(self.validate_loader)}\n"
-            f"    test loader: size={len(self.test_loader)}"
+            f"    test loader: size={len(self.test_loader)}\n"
+            f"    unsued loader: size={len(self.unused_loader)}"
         )
 
     def train(self):
@@ -95,6 +106,8 @@ class Trainer:
 
         start_time = time.time()
         next_vis = 1
+        checkin_interval = 30
+        checkin_time = time.time() + checkin_interval
         train_losses = []
         validate_losses = []
 
@@ -119,6 +132,13 @@ class Trainer:
                 optimizer.step()
 
                 train_loss += loss.item()
+
+                # Check in
+                if time.time() >= checkin_time:
+                    print(f"    Checkin: time passed: "
+                          f"{time.time() - start_time}, batch_inx: {batch_idx},"
+                          f" curr_loss: {train_loss}")
+                    checkin_time = time.time() + checkin_interval
             # update training losses
             avg_loss = train_loss / len(self.train_loader)
             train_losses.append(avg_loss)
@@ -128,12 +148,18 @@ class Trainer:
             self.model.eval()
             validate_loss = 0
             with torch.no_grad():
-                for batch_idx, (images, masks) in enumerate(self.train_loader):
+                for batch_idx, (images, masks) in enumerate(self.validate_loader):
                     images, masks = images.to(self.device), masks.to(
                         self.device)
                     outputs = self.model(images)
                     loss = criterion(outputs, masks)
                     validate_loss += loss.item()
+                    # Check in
+                    if time.time() >= checkin_time:
+                        print(f"    Checkin: time passed: "
+                              f"{time.time() - start_time}, batch_inx: {batch_idx},"
+                              f" curr_loss: {train_loss}")
+                        checkin_time = time.time() + checkin_interval
             # update validation losses
             avg_loss = validate_loss / len(self.validate_loader)
             validate_losses.append(avg_loss)
