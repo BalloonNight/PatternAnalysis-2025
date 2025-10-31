@@ -621,7 +621,7 @@ class Trainer:
         Args:
             model_path: The name of the model to load into the class.
         """
-        self.model.load_state_dict(torch.load(model_path, map_location=self.device))
+        self.model = torch.load(model_path, map_location=self.device).to(self.device)
 
     @staticmethod
     def compute_accuracy(predictions: torch.Tensor,
