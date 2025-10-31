@@ -1,10 +1,7 @@
-import time
-
 import numpy as np
 import nibabel as nib
 import torch
 from monai.data import CacheDataset
-from tqdm import tqdm
 import os
 from torch.utils.data import Dataset
 import torchio as tio

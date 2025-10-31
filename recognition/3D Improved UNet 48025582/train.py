@@ -6,11 +6,10 @@ Reference for [4] and [5] can be found in README.md
 """
 import os
 import re
-import shutil
 import time
 import matplotlib.animation as animation
 from matplotlib import pyplot as plt
-from torch.utils.data import random_split, DataLoader
+from torch.utils.data import DataLoader
 import dataset as ds
 import modules as md
 import torch
@@ -317,7 +316,26 @@ class Trainer:
         self.show_graphs(train_losses, train_coefficients, train_accuracy, validate_losses, validate_coefficients, validate_accuracy)
 
         # test training data
+        worst_coefficient = self.test()
+
+        title = f"Final Model {worst_coefficient}"
+        self.save_model(title)
+
+    def test(self, visualise: bool = False) -> float:
+        """Tests the current loaded model.
+
+        Args:
+            visualise: if the visuals should also be printed.
+
+        Returns:
+            float: The worst coefficient.
+        """
         self.model.eval()
+
+        start_time = time.time()
+        checkin_interval = 60
+        checkin_time = time.time() + checkin_interval
+
         multi_dice_loss = 0
         dice_coefficients = [0, 0, 0, 0, 0, 0, 0]
         accuracy = 0
@@ -352,7 +370,7 @@ class Trainer:
                 predict_label = torch.argmax(predict_labels, dim=1)[0, :, :, :
                 ].cpu().numpy()
                 title = f"Testing Batch {batch_idx}"
-                self.plot_3d_image(image, true_label, predict_label, title, cur_coefficients)
+                self.plot_3d_image(image, true_label, predict_label, title, cur_coefficients, visualise=visualise)
 
                 # Check in
                 if time.time() >= checkin_time:
@@ -369,18 +387,12 @@ class Trainer:
         avg_coefficients = [x / len(self.test_loader) for x in
                             dice_coefficients]
         avg_accuracy = accuracy / len(self.test_loader)
-        validate_losses.append(avg_loss)
-        validate_coefficients.append(avg_coefficients)
-        validate_accuracy.append(avg_accuracy)
         print(f"    Testing:\n"
               f"        Loss: {avg_loss:.4f}\n"
               f"        Coefficients: {[f'{c:.4f}' for c in avg_coefficients]}\n"
               f"        Accuracy: {avg_accuracy:.4f}")
 
-        title = f"Final Model {worst_coefficient}"
-        self.save_model(title)
-
-
+        return worst_coefficient
 
     def show_graphs(self, train_losses, train_coefficients, train_accuracy, validate_losses, validate_coefficients, validate_accuracy):
         fig, axes = plt.subplots(2, 2, figsize=(12, 8))
@@ -503,7 +515,7 @@ class Trainer:
         return (1 - avg_dice_coefficient), dice_coefficients
 
     def plot_3d_image(self, image: np.ndarray, true_label: np.ndarray,
-                      predict_label: np.ndarray, title: str, dcs_values: list[float]):
+                      predict_label: np.ndarray, title: str, dcs_values: list[float], visualise: bool = False):
         """Plots a 3d image by scrolling through one of its axis. modified from
         [5]. The images must be of shape [H, W, D].
 
@@ -514,6 +526,7 @@ class Trainer:
             title: The title to be put into the graph and file save name.
             dcs_values: List of all the dice coefficients for each label.
              in order [Background, Body, Bone, Bladder, Rectum, Prostate, Multiclass].
+            visualise: True if the plot should be printed to the screen.
         """
         # flip to wanted orientation
         image = np.flip(np.transpose(image, axes=[0, 2, 1]), axis=1)
@@ -569,6 +582,8 @@ class Trainer:
                                         bitrate=1800)
         save_path = self.get_formatted_filepath(self.image_save_path, title, "gif")
         ani.save(save_path, writer=writer, dpi=80)
+        if visualise:
+            plt.show()
         plt.close()
 
     def get_formatted_filepath(self, path: str, name: str, type: str) -> str:
@@ -599,6 +614,14 @@ class Trainer:
         """
         filename = self.get_formatted_filepath(self.model_save_path, model_name, "pt")
         torch.save(self.model, filename)
+
+    def load_model(self, model_path):
+        """Given the name of a model, loads it.
+
+        Args:
+            model_path: The name of the model to load into the class.
+        """
+        self.model.load_state_dict(torch.load(model_path, map_location=self.device))
 
     @staticmethod
     def compute_accuracy(predictions: torch.Tensor,
