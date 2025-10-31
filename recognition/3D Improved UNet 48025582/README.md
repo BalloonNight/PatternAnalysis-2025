@@ -51,8 +51,6 @@ into a simple 6 filter feature map and upscales the lower feature maps and
 combines them with the higher ones.
 
 ## Prostate 3D Dataset
-**INCOMPLETE**, describe the dataset and cite [1]
-
 This project uses the *"Labelled weekly MR images of the male pelvis"* dataset 
 from [1] to train it's model.
 
@@ -65,6 +63,10 @@ therapy, where therapy starts Week1.
  - Image dimensions are 256x256x128 Voxels
    - For this model this was halved down to 128x128x64 voxels for computational speed
 
+And for training this data was split up into 80% training, 10% validation, and 
+10% testing. to increase the theoretical size of the training set several 
+augmentations took place, those being random rotation and random noise.
+
 ## Dependencies
 Python 3.11.3
 matplotlib==3.10.7
@@ -74,14 +76,55 @@ numpy==2.3.4
 torch==2.5.1+cu121
 torchio==0.20.23
 
-## Example usage
-**INCOMPLETE**, example input, output and visualisation, describe how to reproduce the results
+## Usage
+### Project structre
+first off this following project structure needs to be followed, particularly 
+the files for containing the data.
+```
+3D Improved UNet 48025582
+> modules.py                                # Components of the model.
+> dataset.py                                # Dataloader and pre-processing.
+> train.py                                  # Training, validation, testing, saving, loading and plotting of the model.
+> predict.py                                # Run an already created model.
+> README.md                                 # Description of the project.
+> semantic_MRs_anon/                        # This can technicly be changed in train.py.
+----> Case_NNN_WeekK_LFOV.nii.gz            # The internal strucutre of the data must be the same.
+> semantic_labels_anon/                     # This can technicly be changed in train.py.
+----> Case_NNN_WeekK_SEMANTIC_LFOV.nii.gz   # The internal strucutre of the data must be the same.
+> output/                                   # Outputs from running the model.
+----> model/                                # Location of finished models.
+----> results/                              # Location of plots and visualizations.
+```
+### Training the Model
+train a model:
+```
+python train.py
+```
+this will simply train the model how i exactly did, however there are many 
+hyperparameters inside to edit if you wish.
 
-## Justification
-**INCOMPLETE**, justify any pre-processing if I use some and the training, validation and testing splits of my data
-downsized image dimensions
-used smaller filters
+test a model:
+```
+python predict.py
+```
+this will run the test dataset on one of the finished models, to change which 
+one change the file name inside the code.
 
+### Training output
+## How 3D Improved UNet3D Works
+Here is the Dice Loss, Accuracy and Dice Similarity Coefficients of the 
+training and validation data over time after running 133 Epochs:
+![](./assets/Graphed_Training_Data_1761868372.png)
+
+Below here is 3 random animated test set samples:
+
+1 | 2 | 3
+--- | --- | ---
+![](./assets/Testing_Batch_1_1761868372.gif) | ![](./assets/Testing_Batch_3_1761868372.gif) | ![](./assets/Testing_Batch_5_1761868372.gif)
+
+The Dice Similarity Coefficients of each label for each sample are is above 
+0.8, thus completing the requirement of at least 0.7 DSC for each label of the 
+task successfully.
 
 ## References
 [1] J. Dowling, P. Greer, *"Labelled weekly MR images of the male pelvis"*, 2021, DOI: https://doi.org/10.25919/45t8-p065

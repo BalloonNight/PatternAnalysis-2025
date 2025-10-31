@@ -1,3 +1,7 @@
+#!/usr/bin/env python3
+"""dataset.py
+An implementation for the loading and handling the dataset.
+"""
 from monai.data import CacheDataset
 import os
 import monai.transforms as mt
